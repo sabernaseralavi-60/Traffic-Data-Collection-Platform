@@ -149,7 +149,7 @@ export const translations = {
     undo_delete: 'لغو',
     // Matching & Analytics
     matching_title: 'موتور همترازسازی سفرهای ورودی و خروجی',
-    matching_subtitle: 'انطباق مکانی-زمانی پلاک‌های ناقص با تشخیص موارد مبهم (موتور مستقل پایتون ۳.۱۰)',
+    matching_subtitle: 'سفرهای محتمل از روی ۳ رقم انتهای پلاک و بازهٔ زمان سفر مجاز؛ موارد مبهم نیازمند تأیید سرپرست‌اند',
     run_matching: 'اجرای موتور انطباق خودروها',
     matching_in_progress: 'در حال اجرای محاسبات انطباق...',
     min_travel_time: 'حداقل زمان سفر معتبر (ثانیه)',

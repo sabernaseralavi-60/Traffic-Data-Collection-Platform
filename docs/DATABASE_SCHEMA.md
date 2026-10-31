@@ -7,11 +7,12 @@ keys, check constraints, indexes, `timestamptz` everywhere.
 |---|---|
 | `users` | username (unique, lowercase), role (ADMIN/SUPERVISOR/OBSERVER), scrypt hash, `active`, `token_version` (bump = sign out everywhere), failed-login counter + lock |
 | `studies` | name, date, start/end time, **timezone**, status DRAFT/ACTIVE/COMPLETED, schematic image (data URL), `is_demo`, `retention_days` |
+| `study_maps` | map sections of a study (name, image data URL, order); `observation_points.map_id` places a point on one |
 | `observation_points` | unique `(study_id, code)`, ENTRY/EXIT, position in % of the map |
 | `route_distances` | metres between an entry and an exit point (speed is shown only where this exists) |
 | `study_assignments` | observer -> point, optional period; deleting a point that is assigned is blocked |
 | `vehicle_categories` | configurable list (code, EN/FA label, active) |
-| `observations` | **immutable events**: `plate_suffix char(3)` text with `^[0-9]{3}$` check (leading zeros valid), `observed_at` (original time), `received_at`, observer, point; unique `(observer_id, idempotency_key)`; `voided_*` columns instead of deletion |
+| `observations` | **immutable events** (optional `audio` bytea + `audio_mime` + `audio_ms`; no audio is stored when the study has `audio_enabled = false`): `plate_suffix char(3)` text with `^[0-9]{3}$` check (leading zeros valid), `observed_at` (original time), `received_at`, observer, point; unique `(observer_id, idempotency_key)`; `voided_*` columns instead of deletion |
 | `match_reviews` | supervisor decisions REVIEWED / REJECTED per (entry, exit) pair |
 | `audit_logs` | who did what (logins, configuration, voids, reviews, exports, purges) |
 | `schema_migrations` | applied migrations |

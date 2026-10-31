@@ -44,7 +44,7 @@ Set `SESSION_SECRET`, `ADMIN_PASSWORD` and (recommended) `DATABASE_URL` - see [.
 ## Documentation
 
 [Architecture](docs/ARCHITECTURE.md) · [API](docs/API_SPECIFICATION.md) · [Database](docs/DATABASE_SCHEMA.md) ·
-[User guide](docs/USER_GUIDE.md) · [Deployment](docs/DEPLOY.md) · [Roadmap and status](docs/IMPLEMENTATION_ROADMAP.md)
+[User guide](docs/USER_GUIDE.md) · [Full guide (Word, Persian)](docs/TrafficLab_User_Guide_FA.docx) · [Deployment](docs/DEPLOY.md) · [Roadmap and status](docs/IMPLEMENTATION_ROADMAP.md)
 
 ## Layout
 

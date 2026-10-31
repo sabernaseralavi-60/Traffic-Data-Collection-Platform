@@ -41,8 +41,8 @@ export const Navbar: React.FC<NavbarProps> = ({ tabs, activeTab, setActiveTab, l
   return (
     <header className="bg-slate-900 text-white sticky top-0 z-50 shadow-md border-b border-slate-800 print:hidden">
       <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between gap-2 h-16">
-          <div className="flex items-center gap-3 min-w-0">
+        <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 py-2 min-h-16">
+          <div className="flex items-center gap-3 min-w-0 flex-1 basis-48">
             <div className="w-10 h-10 shrink-0 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-500/20">
               <Car className="w-6 h-6 text-white" />
             </div>
@@ -63,7 +63,7 @@ export const Navbar: React.FC<NavbarProps> = ({ tabs, activeTab, setActiveTab, l
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             {isOnline ? (
               <span className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-950/70 text-emerald-400 border border-emerald-800/60">
                 <span className="w-2 h-2 rounded-full bg-emerald-400" aria-hidden />{t.online}

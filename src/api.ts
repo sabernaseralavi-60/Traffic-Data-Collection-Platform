@@ -19,7 +19,7 @@ export async function api<T = any>(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'D
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    if (res.status === 401 && !path.startsWith('/auth/login')) window.dispatchEvent(new Event('tl:unauthenticated'));
+    if (res.status === 401 && !path.startsWith('/auth/login') && path !== '/auth/me') window.dispatchEvent(new Event('tl:unauthenticated')); // the start-up probe of /auth/me is not an expiry
     throw new ApiError(res.status, data.error || `Request failed (${res.status})`, data.code || 'error', data.issues);
   }
   return data as T;

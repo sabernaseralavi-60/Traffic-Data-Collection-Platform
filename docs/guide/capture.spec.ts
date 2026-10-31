@@ -48,6 +48,8 @@ test('capture guide screenshots', async ({ browser }) => {
   await mark(phone, 'login-username', 'login-password', 'login-submit');
   await shot(phone, '01-login');
   await login(admin, 'admin', 'Admin-pass-1');
+  await expect(admin.getByTestId('study-title')).toBeVisible({ timeout: 20_000 });
+  await expect(admin.getByTestId('kpi-matched')).toContainText(/\d/);
   await shot(admin, '02-dashboard-admin');
 
   // ---- accounts and categories
@@ -162,6 +164,7 @@ test('capture guide screenshots', async ({ browser }) => {
   const sup = await supCtx.newPage();
   await login(sup, 'supervisor', 'Demo-pass-1');
   await useDemo(sup);
+  await expect(sup.getByTestId('kpi-matched')).toContainText(/\d/, { timeout: 20_000 });
   await shot(sup, '16-dashboard', true);
   await sup.getByTestId('tab-matching').click();
   await sup.getByTestId('run-matching').click();
