@@ -1,39 +1,58 @@
 #!/usr/bin/env python3
 """
-TrafficLab Analytical & Matching Engine
-Modular Transportation Engineering Engine for Vehicle Entry-Exit Tracking,
-Partial License Plate Matching, OD Matrix Synthesis, and Travel Time Analysis.
+TrafficLab analytical and matching engine.
+
+Entry-exit tracking with partial (3-digit) licence-plate matching, OD matrix, travel-time statistics,
+counts, and report export. Pure functions over plain dictionaries: it knows nothing about the database
+or HTTP layer (spec 9.1: matching independent of the database interface).
+
+IMPORTANT (method limits): a three-digit suffix is not a vehicle identifier. A MATCHED record is a
+*probable* journey. `match_score` is a heuristic ranking value (5-99), NOT a probability.
 """
 
-from dataclasses import dataclass, asdict, field
-from datetime import datetime, timezone
+from __future__ import annotations
+
+import csv
+import io
 import json
 import math
 import statistics
 import sys
-from typing import List, Dict, Any, Optional, Tuple
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+METHOD_NOTE = (
+    "Probable journeys from 3-digit plate suffix + feasible travel-time window. Suffixes are not unique; "
+    "match_score is a heuristic (not a probability). Ambiguous cases are never forced and need supervisor review."
+)
+GENERIC_CATEGORIES = ("UNKNOWN", "OTHER", "")
+
 
 def parse_iso_or_epoch(val: Any) -> float:
-    """Parses ISO timestamp string or numeric epoch seconds into float epoch seconds."""
+    """ISO-8601 string or epoch seconds -> epoch seconds. A timestamp WITHOUT a zone is read as UTC
+    (never as the server's local zone, which would make results depend on where the server runs)."""
+    if isinstance(val, bool):
+        raise ValueError("Unsupported timestamp type: bool")
     if isinstance(val, (int, float)):
         return float(val)
     if isinstance(val, str):
-        # Handle trailing Z or offsets
-        val_clean = val.replace("Z", "+00:00")
         try:
-            dt = datetime.fromisoformat(val_clean)
-            return dt.timestamp()
-        except Exception:
+            dt = datetime.fromisoformat(val.strip().replace("Z", "+00:00"))
+        except ValueError:
             try:
                 return float(val)
-            except Exception as e:
-                raise ValueError(f"Cannot parse timestamp '{val}': {e}")
+            except ValueError as exc:
+                raise ValueError(f"Cannot parse timestamp '{val}'") from exc
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
     raise ValueError(f"Unsupported timestamp type: {type(val)}")
 
+
 def format_epoch_iso(epoch_sec: float) -> str:
-    """Formats epoch seconds into standard UTC ISO 8601 string."""
-    dt = datetime.fromtimestamp(epoch_sec, tz=timezone.utc)
-    return dt.isoformat().replace("+00:00", "Z")
+    return datetime.fromtimestamp(epoch_sec, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
 
 @dataclass
 class Observation:
@@ -41,12 +60,12 @@ class Observation:
     study_id: str
     point_code: str
     point_type: str  # 'ENTRY' or 'EXIT'
-    plate_suffix: str  # 3 digits, string to preserve leading zeroes
+    plate_suffix: str  # 3 digits kept as text (leading zeros are valid)
     observation_timestamp: float
-    vehicle_category: str = "CAR"
+    vehicle_category: str = "UNKNOWN"
     vehicle_color: Optional[str] = None
     observer_id: Optional[str] = None
-    idempotency_key: Optional[str] = None
+
 
 @dataclass
 class CandidatePair:
@@ -58,9 +77,11 @@ class CandidatePair:
     entry_time: float
     exit_time: float
     travel_time_sec: float
-    confidence_score: float
+    match_score: float
+    category: str
     category_match: bool
     estimated_speed_kmh: Optional[float] = None
+
 
 @dataclass
 class MatchResult:
@@ -75,11 +96,25 @@ class MatchResult:
     exit_timestamp: str
     travel_time_seconds: float
     estimated_speed_kmh: Optional[float]
-    confidence_score: float
-    match_status: str  # 'MATCHED', 'AMBIGUOUS', 'UNMATCHED', 'REVIEWED', 'REJECTED'
+    match_score: float
+    match_status: str  # MATCHED | REVIEWED  (AMBIGUOUS / UNMATCHED / REJECTED are reported separately)
     vehicle_category: str
     candidate_ids: List[str] = field(default_factory=list)
     notes: Optional[str] = None
+
+
+def _norm_cat(value: Optional[str]) -> str:
+    return (value or "").strip().upper()
+
+
+def _pick_category(entry_cat: str, exit_cat: str) -> str:
+    e, x = _norm_cat(entry_cat), _norm_cat(exit_cat)
+    if e not in GENERIC_CATEGORIES:
+        return e
+    if x not in GENERIC_CATEGORIES:
+        return x
+    return e or x or "UNKNOWN"
+
 
 class PartialPlateMatcher:
     def __init__(
@@ -91,505 +126,433 @@ class PartialPlateMatcher:
     ):
         self.min_travel_time_sec = float(min_travel_time_sec)
         self.max_travel_time_sec = float(max_travel_time_sec)
-        self.strict_category_match = strict_category_match
-        # route_distances: mapping e.g. "E01->X01": distance_in_meters
-        self.route_distances = route_distances or {}
+        if self.min_travel_time_sec < 0 or self.max_travel_time_sec < self.min_travel_time_sec:
+            raise ValueError("travel-time window must satisfy 0 <= min <= max")
+        self.strict_category_match = bool(strict_category_match)
+        self.route_distances = route_distances or {}  # "E01->X01": metres
 
     def get_route_distance(self, entry: str, exit_pt: str) -> Optional[float]:
-        key = f"{entry}->{exit_pt}"
-        if key in self.route_distances:
-            return float(self.route_distances[key])
-        alt_key = f"{entry}_{exit_pt}"
-        if alt_key in self.route_distances:
-            return float(self.route_distances[alt_key])
+        for key in (f"{entry}->{exit_pt}", f"{entry}_{exit_pt}"):
+            if key in self.route_distances:
+                return float(self.route_distances[key])
         return None
 
-    def calculate_confidence(
-        self,
-        travel_time_sec: float,
-        entry_cat: str,
-        exit_cat: str,
-        distance_m: Optional[float] = None
-    ) -> Tuple[float, Optional[float]]:
-        """
-        Calculates match confidence (0-100) and estimated journey speed (km/h).
-        Considers time window feasibility, speed plausibility, and category agreement.
-        """
-        score = 65.0  # Base score for identical 3-digit suffix
-
-        # Category compatibility check (up to 15 pts)
-        norm_entry = (entry_cat or "").strip().upper()
-        norm_exit = (exit_cat or "").strip().upper()
-        if norm_entry and norm_exit:
-            if norm_entry == norm_exit:
+    def score(self, travel_time_sec: float, entry_cat: str, exit_cat: str,
+              distance_m: Optional[float] = None) -> Tuple[float, Optional[float]]:
+        """Heuristic ranking score (5-99) and estimated average journey speed (km/h).
+        base 65 for equal suffix; +category agreement; +plausible average speed (when the route
+        distance is configured) or +position inside the time window (when it is not)."""
+        score = 65.0
+        e, x = _norm_cat(entry_cat), _norm_cat(exit_cat)
+        if e and x:
+            if e == x:
                 score += 15.0
-            elif norm_entry in ("UNKNOWN", "OTHER") or norm_exit in ("UNKNOWN", "OTHER"):
+            elif e in GENERIC_CATEGORIES or x in GENERIC_CATEGORIES:
                 score += 5.0
             else:
-                score -= 20.0  # Category discrepancy penalty
+                score -= 20.0
         else:
             score += 5.0
 
-        # Speed calculation and physical plausibility check
         speed_kmh = None
         if distance_m is not None and distance_m > 0 and travel_time_sec > 0:
             speed_kmh = (distance_m / travel_time_sec) * 3.6
-            # Urban speeds typically 10 - 90 km/h
             if 15.0 <= speed_kmh <= 80.0:
                 score += 20.0
             elif 5.0 <= speed_kmh < 15.0 or 80.0 < speed_kmh <= 110.0:
                 score += 10.0
             elif speed_kmh > 140.0 or speed_kmh < 3.0:
-                # Highly implausible speed indicates spurious match
                 score -= 35.0
         else:
-            # When distance is unknown, evaluate relative travel time position within window
-            mid_window = (self.min_travel_time_sec + self.max_travel_time_sec) / 2.0
-            time_dev = abs(travel_time_sec - mid_window) / (self.max_travel_time_sec - self.min_travel_time_sec)
-            score += max(0.0, 20.0 * (1.0 - time_dev))
+            span = self.max_travel_time_sec - self.min_travel_time_sec
+            if span > 0:
+                mid = (self.min_travel_time_sec + self.max_travel_time_sec) / 2.0
+                score += max(0.0, 20.0 * (1.0 - abs(travel_time_sec - mid) / span))
+        return round(max(5.0, min(99.0, score)), 1), (round(speed_kmh, 1) if speed_kmh is not None else None)
 
-        clamped_score = max(5.0, min(99.0, score))
-        return round(clamped_score, 1), round(speed_kmh, 1) if speed_kmh is not None else None
+    # kept for backwards compatibility with older callers/tests
+    def calculate_confidence(self, *a: Any, **k: Any) -> Tuple[float, Optional[float]]:
+        return self.score(*a, **k)
 
-    def match_observations(self, observations: List[Observation]) -> Dict[str, Any]:
-        """
-        Main matching pipeline.
-        1. Segregate entries and exits.
-        2. Identify candidate pairs where t_exit > t_entry and within feasible travel time window.
-        3. Detect ambiguities (1 entry matching multiple exits or 1 exit matching multiple entries).
-        4. Produce MATCHED, AMBIGUOUS, and UNMATCHED records.
-        """
-        entries: List[Observation] = []
-        exits: List[Observation] = []
+    def _result(self, cp: CandidatePair, study_id: str, status: str, note: str) -> MatchResult:
+        return MatchResult(
+            id=f"match-{cp.entry_id}-{cp.exit_id}", study_id=study_id, plate_suffix=cp.plate_suffix,
+            entry_observation_id=cp.entry_id, exit_observation_id=cp.exit_id,
+            entry_point_code=cp.entry_point, exit_point_code=cp.exit_point,
+            entry_timestamp=format_epoch_iso(cp.entry_time), exit_timestamp=format_epoch_iso(cp.exit_time),
+            travel_time_seconds=round(cp.travel_time_sec, 1), estimated_speed_kmh=cp.estimated_speed_kmh,
+            match_score=cp.match_score, match_status=status, vehicle_category=cp.category,
+            candidate_ids=[cp.entry_id, cp.exit_id], notes=note,
+        )
 
-        for obs in observations:
-            p_type = obs.point_type.strip().upper()
-            if p_type == "ENTRY":
-                entries.append(obs)
-            elif p_type == "EXIT":
-                exits.append(obs)
+    def _pair(self, ent: Observation, ext: Observation, tt: float) -> CandidatePair:
+        e, x = _norm_cat(ent.vehicle_category), _norm_cat(ext.vehicle_category)
+        cat_match = e == x or e in GENERIC_CATEGORIES or x in GENERIC_CATEGORIES
+        dist = self.get_route_distance(ent.point_code, ext.point_code)
+        score, spd = self.score(tt, e, x, dist)
+        return CandidatePair(
+            entry_id=ent.id, exit_id=ext.id, plate_suffix=ent.plate_suffix,
+            entry_point=ent.point_code, exit_point=ext.point_code,
+            entry_time=ent.observation_timestamp, exit_time=ext.observation_timestamp,
+            travel_time_sec=tt, match_score=score, category=_pick_category(e, x),
+            category_match=cat_match, estimated_speed_kmh=spd,
+        )
 
-        # Sort chronologically
-        entries.sort(key=lambda o: o.observation_timestamp)
-        exits.sort(key=lambda o: o.observation_timestamp)
+    def match_observations(self, observations: List[Observation],
+                           reviews: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """Pipeline: split entry/exit -> apply stored supervisor reviews -> per-suffix candidate pairs inside the
+        feasible window -> unique 1:1 pairs are MATCHED, conflicts are AMBIGUOUS (never forced)."""
+        entries = sorted((o for o in observations if o.point_type.strip().upper() == "ENTRY"),
+                         key=lambda o: o.observation_timestamp)
+        exits = sorted((o for o in observations if o.point_type.strip().upper() == "EXIT"),
+                       key=lambda o: o.observation_timestamp)
+        by_id: Dict[str, Observation] = {o.id: o for o in entries + exits}
 
-        # Map by plate suffix
-        entries_by_suffix: Dict[str, List[Observation]] = {}
-        for e in entries:
-            entries_by_suffix.setdefault(e.plate_suffix, []).append(e)
+        matched: List[MatchResult] = []
+        taken: Set[str] = set()
+        rejected: Set[Tuple[str, str]] = set()
+        reviewed_count = rejected_count = 0
 
-        exits_by_suffix: Dict[str, List[Observation]] = {}
-        for x in exits:
-            exits_by_suffix.setdefault(x.plate_suffix, []).append(x)
-
-        all_suffixes = set(entries_by_suffix.keys()) | set(exits_by_suffix.keys())
-
-        matched_records: List[MatchResult] = []
-        ambiguous_records: List[Dict[str, Any]] = []
-        matched_entry_ids = set()
-        matched_exit_ids = set()
-
-        for suffix in sorted(all_suffixes):
-            suffix_entries = entries_by_suffix.get(suffix, [])
-            suffix_exits = exits_by_suffix.get(suffix, [])
-
-            # Find all feasible candidate pairs
-            candidate_pairs: List[CandidatePair] = []
-            for ent in suffix_entries:
-                for ext in suffix_exits:
-                    tt = ext.observation_timestamp - ent.observation_timestamp
-                    if self.min_travel_time_sec <= tt <= self.max_travel_time_sec:
-                        cat_match = (
-                            ent.vehicle_category.upper() == ext.vehicle_category.upper()
-                            or ent.vehicle_category.upper() in ("UNKNOWN", "OTHER")
-                            or ext.vehicle_category.upper() in ("UNKNOWN", "OTHER")
-                        )
-                        if self.strict_category_match and not cat_match:
-                            continue
-
-                        dist = self.get_route_distance(ent.point_code, ext.point_code)
-                        conf, spd = self.calculate_confidence(tt, ent.vehicle_category, ext.vehicle_category, dist)
-
-                        candidate_pairs.append(CandidatePair(
-                            entry_id=ent.id,
-                            exit_id=ext.id,
-                            plate_suffix=suffix,
-                            entry_point=ent.point_code,
-                            exit_point=ext.point_code,
-                            entry_time=ent.observation_timestamp,
-                            exit_time=ext.observation_timestamp,
-                            travel_time_sec=tt,
-                            confidence_score=conf,
-                            category_match=cat_match,
-                            estimated_speed_kmh=spd
-                        ))
-
-            # Resolution strategy
-            if not candidate_pairs:
+        for rv in reviews or []:
+            ent, ext = by_id.get(str(rv.get("entry_id"))), by_id.get(str(rv.get("exit_id")))
+            if ent is None or ext is None or ent.point_type.upper() != "ENTRY" or ext.point_type.upper() != "EXIT":
                 continue
+            decision = str(rv.get("decision", "")).upper()
+            if decision == "REJECTED":
+                rejected.add((ent.id, ext.id))
+                rejected_count += 1
+            elif decision == "REVIEWED":
+                tt = ext.observation_timestamp - ent.observation_timestamp
+                if tt <= 0 or ent.id in taken or ext.id in taken:
+                    continue  # a decision that no longer makes sense (e.g. exit before entry) is ignored
+                cp = self._pair(ent, ext, tt)
+                matched.append(self._result(cp, ent.study_id, "REVIEWED",
+                                            f"Confirmed by supervisor{': ' + rv['note'] if rv.get('note') else ''}"))
+                taken.update((ent.id, ext.id))
+                reviewed_count += 1
 
-            # Check if this suffix is unambiguous: 1 entry and 1 exit with 1 pair
-            if len(suffix_entries) == 1 and len(suffix_exits) == 1 and len(candidate_pairs) == 1:
-                cp = candidate_pairs[0]
-                matched_entry_ids.add(cp.entry_id)
-                matched_exit_ids.add(cp.exit_id)
-                ent_obs = suffix_entries[0]
-                category = ent_obs.vehicle_category if ent_obs.vehicle_category != "UNKNOWN" else suffix_exits[0].vehicle_category
-                
-                matched_records.append(MatchResult(
-                    id=f"match-{cp.entry_id}-{cp.exit_id}",
-                    study_id=ent_obs.study_id,
-                    plate_suffix=suffix,
-                    entry_observation_id=cp.entry_id,
-                    exit_observation_id=cp.exit_id,
-                    entry_point_code=cp.entry_point,
-                    exit_point_code=cp.exit_point,
-                    entry_timestamp=format_epoch_iso(cp.entry_time),
-                    exit_timestamp=format_epoch_iso(cp.exit_time),
-                    travel_time_seconds=round(cp.travel_time_sec, 1),
-                    estimated_speed_kmh=cp.estimated_speed_kmh,
-                    confidence_score=cp.confidence_score,
-                    match_status="MATCHED",
-                    vehicle_category=category,
-                    candidate_ids=[cp.entry_id, cp.exit_id],
-                    notes="Deterministic 1-to-1 match within feasible travel time window"
-                ))
+        ent_by_suffix: Dict[str, List[Observation]] = {}
+        ext_by_suffix: Dict[str, List[Observation]] = {}
+        for e in entries:
+            if e.id not in taken:
+                ent_by_suffix.setdefault(e.plate_suffix, []).append(e)
+        for x in exits:
+            if x.id not in taken:
+                ext_by_suffix.setdefault(x.plate_suffix, []).append(x)
+
+        ambiguous: List[Dict[str, Any]] = []
+        amb_entry_ids: Set[str] = set()
+        amb_exit_ids: Set[str] = set()
+
+        for suffix in sorted(set(ent_by_suffix) | set(ext_by_suffix)):
+            pairs: List[CandidatePair] = []
+            for ent in ent_by_suffix.get(suffix, []):
+                for ext in ext_by_suffix.get(suffix, []):
+                    if (ent.id, ext.id) in rejected:
+                        continue
+                    tt = ext.observation_timestamp - ent.observation_timestamp
+                    if not (self.min_travel_time_sec <= tt <= self.max_travel_time_sec):
+                        continue
+                    cp = self._pair(ent, ext, tt)
+                    if self.strict_category_match and not cp.category_match:
+                        continue
+                    pairs.append(cp)
+            if not pairs:
+                continue
+            ents = {cp.entry_id for cp in pairs}
+            exts = {cp.exit_id for cp in pairs}
+            if len(ents) == len(pairs) and len(exts) == len(pairs):  # every candidate is 1:1 -> unambiguous
+                for cp in pairs:
+                    sid = by_id[cp.entry_id].study_id
+                    matched.append(self._result(cp, sid, "MATCHED", "Unique candidate inside the feasible travel-time window"))
+                    taken.update((cp.entry_id, cp.exit_id))
             else:
-                # Multiple candidates exist for this suffix (e.g., duplicate suffix within short duration)
-                # Group candidates by exit or entry to find conflicts
-                entries_involved = set(cp.entry_id for cp in candidate_pairs)
-                exits_involved = set(cp.exit_id for cp in candidate_pairs)
+                amb_entry_ids |= ents
+                amb_exit_ids |= exts
+                ambiguous.append({
+                    "plate_suffix": suffix,
+                    "status": "AMBIGUOUS",
+                    "entries_count": len(ent_by_suffix.get(suffix, [])),
+                    "exits_count": len(ext_by_suffix.get(suffix, [])),
+                    "candidate_pairs": [
+                        {"entry_id": cp.entry_id, "exit_id": cp.exit_id, "entry_point": cp.entry_point,
+                         "exit_point": cp.exit_point, "entry_time": format_epoch_iso(cp.entry_time),
+                         "exit_time": format_epoch_iso(cp.exit_time), "travel_time_sec": round(cp.travel_time_sec, 1),
+                         "match_score": cp.match_score, "speed_kmh": cp.estimated_speed_kmh,
+                         "vehicle_category": cp.category}
+                        for cp in pairs
+                    ],
+                    "notes": f"{len(pairs)} candidate pairs for suffix {suffix}: the same observation has several possible partners.",
+                })
 
-                # If perfectly pairable with identical count and non-overlapping sequence, resolve sequentially
-                if len(entries_involved) == len(candidate_pairs) and len(exits_involved) == len(candidate_pairs):
-                    # No ambiguity: each entry mapped to distinct exit
-                    for cp in candidate_pairs:
-                        matched_entry_ids.add(cp.entry_id)
-                        matched_exit_ids.add(cp.exit_id)
-                        matched_records.append(MatchResult(
-                            id=f"match-{cp.entry_id}-{cp.exit_id}",
-                            study_id=suffix_entries[0].study_id,
-                            plate_suffix=suffix,
-                            entry_observation_id=cp.entry_id,
-                            exit_observation_id=cp.exit_id,
-                            entry_point_code=cp.entry_point,
-                            exit_point_code=cp.exit_point,
-                            entry_timestamp=format_epoch_iso(cp.entry_time),
-                            exit_timestamp=format_epoch_iso(cp.exit_time),
-                            travel_time_seconds=round(cp.travel_time_sec, 1),
-                            estimated_speed_kmh=cp.estimated_speed_kmh,
-                            confidence_score=cp.confidence_score,
-                            match_status="MATCHED",
-                            vehicle_category=suffix_entries[0].vehicle_category,
-                            candidate_ids=[cp.entry_id, cp.exit_id],
-                            notes="Resolved 1-to-1 sequential match"
-                        ))
-                else:
-                    # True Ambiguity: One observation has multiple candidate matches!
-                    # Mark as AMBIGUOUS for supervisor review and include all candidates
-                    ambig_item = {
-                        "plate_suffix": suffix,
-                        "status": "AMBIGUOUS",
-                        "entries_count": len(suffix_entries),
-                        "exits_count": len(suffix_exits),
-                        "candidate_pairs": [
-                            {
-                                "entry_id": cp.entry_id,
-                                "exit_id": cp.exit_id,
-                                "entry_point": cp.entry_point,
-                                "exit_point": cp.exit_point,
-                                "entry_time": format_epoch_iso(cp.entry_time),
-                                "exit_time": format_epoch_iso(cp.exit_time),
-                                "travel_time_sec": round(cp.travel_time_sec, 1),
-                                "confidence_score": cp.confidence_score,
-                                "speed_kmh": cp.estimated_speed_kmh
-                            }
-                            for cp in candidate_pairs
-                        ],
-                        "notes": f"Multiple potential vehicle journeys ({len(candidate_pairs)} candidate pairs) detected for suffix {suffix}."
-                    }
-                    ambiguous_records.append(ambig_item)
+        def brief(o: Observation) -> Dict[str, Any]:
+            return {"id": o.id, "plate_suffix": o.plate_suffix, "point_code": o.point_code,
+                    "timestamp": format_epoch_iso(o.observation_timestamp), "vehicle_category": o.vehicle_category}
 
-        # Unmatched entries and exits
-        unmatched_entries = [e for e in entries if e.id not in matched_entry_ids]
-        unmatched_exits = [x for x in exits if x.id not in matched_exit_ids]
-
-        total_entries = len(entries)
-        total_exits = len(exits)
-        matched_count = len(matched_records)
-        ambig_count = len(ambiguous_records)
-
-        matching_rate = (matched_count / total_entries * 100.0) if total_entries > 0 else 0.0
-
-        travel_times = [m.travel_time_seconds for m in matched_records]
-        mean_tt = round(statistics.mean(travel_times), 1) if travel_times else 0.0
-        median_tt = round(statistics.median(travel_times), 1) if travel_times else 0.0
-
+        unmatched_entries = [e for e in entries if e.id not in taken and e.id not in amb_entry_ids]
+        unmatched_exits = [x for x in exits if x.id not in taken and x.id not in amb_exit_ids]
+        times = [m.travel_time_seconds for m in matched]
+        rate = (len(matched) / len(entries) * 100.0) if entries else 0.0
         summary = {
             "total_observations": len(observations),
-            "total_entries": total_entries,
-            "total_exits": total_exits,
-            "matched_journeys": matched_count,
-            "ambiguous_cases": ambig_count,
+            "total_entries": len(entries),
+            "total_exits": len(exits),
+            "matched_journeys": len(matched),
+            "reviewed_journeys": reviewed_count,
+            "rejected_pairs": rejected_count,
+            "ambiguous_cases": len(ambiguous),
+            "ambiguous_entries": len(amb_entry_ids),
+            "ambiguous_exits": len(amb_exit_ids),
             "unmatched_entries": len(unmatched_entries),
             "unmatched_exits": len(unmatched_exits),
-            "matching_rate_percent": round(matching_rate, 2),
-            "mean_travel_time_sec": mean_tt,
-            "median_travel_time_sec": median_tt
+            "matching_rate_percent": round(rate, 2),
+            "mean_travel_time_sec": round(statistics.mean(times), 1) if times else 0.0,
+            "median_travel_time_sec": round(statistics.median(times), 1) if times else 0.0,
+            "method_note": METHOD_NOTE,
         }
-
         return {
             "summary": summary,
-            "matches": [asdict(m) for m in matched_records],
-            "ambiguous": ambiguous_records,
-            "unmatched_entries": [
-                {
-                    "id": u.id,
-                    "plate_suffix": u.plate_suffix,
-                    "point_code": u.point_code,
-                    "timestamp": format_epoch_iso(u.observation_timestamp),
-                    "vehicle_category": u.vehicle_category
-                }
-                for u in unmatched_entries
-            ],
-            "unmatched_exits": [
-                {
-                    "id": u.id,
-                    "plate_suffix": u.plate_suffix,
-                    "point_code": u.point_code,
-                    "timestamp": format_epoch_iso(u.observation_timestamp),
-                    "vehicle_category": u.vehicle_category
-                }
-                for u in unmatched_exits
-            ]
+            "matches": [asdict(m) for m in matched],
+            "ambiguous": ambiguous,
+            "unmatched_entries": [brief(u) for u in unmatched_entries],
+            "unmatched_exits": [brief(u) for u in unmatched_exits],
         }
 
 
 class TrafficAnalytics:
     @staticmethod
     def calculate_od_matrix(matches: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Builds the 2D Origin-Destination Matrix with row, column, and total sums.
-        """
-        origins = sorted(list(set(m["entry_point_code"] for m in matches)))
-        destinations = sorted(list(set(m["exit_point_code"] for m in matches)))
-
-        matrix: Dict[str, Dict[str, int]] = {o: {d: 0 for d in destinations} for o in origins}
-        row_totals: Dict[str, int] = {o: 0 for o in origins}
-        col_totals: Dict[str, int] = {d: 0 for d in destinations}
-        grand_total = 0
-
+        origins = sorted({m["entry_point_code"] for m in matches})
+        destinations = sorted({m["exit_point_code"] for m in matches})
+        matrix = {o: {d: 0 for d in destinations} for o in origins}
+        row_totals = {o: 0 for o in origins}
+        col_totals = {d: 0 for d in destinations}
+        grand = 0
         for m in matches:
-            o = m["entry_point_code"]
-            d = m["exit_point_code"]
-            if o in matrix and d in matrix[o]:
-                matrix[o][d] += 1
-                row_totals[o] += 1
-                col_totals[d] += 1
-                grand_total += 1
-
-        # Calculate percentage distribution
-        percentage_matrix: Dict[str, Dict[str, float]] = {
-            o: {d: round((matrix[o][d] / grand_total * 100.0), 1) if grand_total > 0 else 0.0 for d in destinations}
-            for o in origins
-        }
-
-        return {
-            "origins": origins,
-            "destinations": destinations,
-            "counts": matrix,
-            "percentages": percentage_matrix,
-            "row_totals": row_totals,
-            "col_totals": col_totals,
-            "grand_total": grand_total
-        }
+            o, d = m["entry_point_code"], m["exit_point_code"]
+            matrix[o][d] += 1
+            row_totals[o] += 1
+            col_totals[d] += 1
+            grand += 1
+        pct = {o: {d: (round(matrix[o][d] / grand * 100.0, 1) if grand else 0.0) for d in destinations} for o in origins}
+        return {"origins": origins, "destinations": destinations, "counts": matrix, "percentages": pct,
+                "row_totals": row_totals, "col_totals": col_totals, "grand_total": grand}
 
     @staticmethod
     def calculate_travel_time_stats(matches: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Calculates travel time distribution statistics: mean, median, std dev,
-        min, max, and percentiles (15th, 50th, 85th, 95th).
-        """
-        times = [float(m["travel_time_seconds"]) for m in matches if "travel_time_seconds" in m]
-        if not times:
-            return {
-                "count": 0,
-                "mean": 0.0,
-                "median": 0.0,
-                "std_dev": 0.0,
-                "min": 0.0,
-                "max": 0.0,
-                "p15": 0.0,
-                "p50": 0.0,
-                "p85": 0.0,
-                "p95": 0.0,
-                "histogram": []
-            }
-
-        times.sort()
+        times = sorted(float(m["travel_time_seconds"]) for m in matches if "travel_time_seconds" in m)
         n = len(times)
+        if n == 0:
+            return {"count": 0, "mean": 0.0, "median": 0.0, "std_dev": 0.0, "min": 0.0, "max": 0.0,
+                    "p15": 0.0, "p50": 0.0, "p85": 0.0, "p95": 0.0, "histogram": []}
 
-        def percentile(p: float) -> float:
+        def pct(p: float) -> float:
             if n == 1:
                 return times[0]
-            k = (n - 1) * (p / 100.0)
-            f = math.floor(k)
-            c = math.ceil(k)
-            if f == c:
-                return times[int(k)]
-            d0 = times[int(f)] * (c - k)
-            d1 = times[int(c)] * (k - f)
-            return d0 + d1
+            k = (n - 1) * p / 100.0
+            f, c = math.floor(k), math.ceil(k)
+            return times[int(k)] if f == c else times[f] * (c - k) + times[c] * (k - f)
 
-        mean_val = statistics.mean(times)
-        std_val = statistics.stdev(times) if n > 1 else 0.0
-        med_val = statistics.median(times)
-
-        # Build 6-bin histogram
-        min_t = times[0]
-        max_t = times[-1]
-        bin_count = 6
-        bin_width = max(1.0, (max_t - min_t) / bin_count)
-        histogram = []
-        for i in range(bin_count):
-            b_start = min_t + i * bin_width
-            b_end = b_start + bin_width
-            cnt = sum(1 for t in times if b_start <= t < b_end or (i == bin_count - 1 and t == max_t))
-            histogram.append({
-                "bin_start": round(b_start, 1),
-                "bin_end": round(b_end, 1),
-                "label": f"{int(b_start)}s - {int(b_end)}s",
-                "count": cnt
-            })
-
-        return {
-            "count": n,
-            "mean": round(mean_val, 1),
-            "median": round(med_val, 1),
-            "std_dev": round(std_val, 1),
-            "min": round(min_t, 1),
-            "max": round(max_t, 1),
-            "p15": round(percentile(15.0), 1),
-            "p50": round(med_val, 1),
-            "p85": round(percentile(85.0), 1),
-            "p95": round(percentile(95.0), 1),
-            "histogram": histogram
-        }
+        lo, hi, bins = times[0], times[-1], 6
+        width = max(1.0, (hi - lo) / bins)
+        hist = []
+        for i in range(bins):
+            a, b = lo + i * width, lo + (i + 1) * width
+            cnt = sum(1 for t in times if a <= t < b or (i == bins - 1 and t == hi))
+            hist.append({"bin_start": round(a, 1), "bin_end": round(b, 1), "label": f"{int(a)}s - {int(b)}s", "count": cnt})
+        med = statistics.median(times)
+        return {"count": n, "mean": round(statistics.mean(times), 1), "median": round(med, 1),
+                "std_dev": round(statistics.stdev(times), 1) if n > 1 else 0.0,
+                "min": round(lo, 1), "max": round(hi, 1), "p15": round(pct(15), 1), "p50": round(med, 1),
+                "p85": round(pct(85), 1), "p95": round(pct(95), 1), "histogram": hist}
 
     @staticmethod
     def calculate_vehicle_category_split(matches: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Calculates modal split by vehicle classification."""
         counts: Dict[str, int] = {}
         for m in matches:
-            cat = m.get("vehicle_category", "UNKNOWN") or "UNKNOWN"
+            cat = m.get("vehicle_category") or "UNKNOWN"
             counts[cat] = counts.get(cat, 0) + 1
-
         total = len(matches)
-        percentages = {k: round(v / total * 100.0, 1) for k, v in counts.items()} if total > 0 else {}
+        return {"total": total, "counts": counts,
+                "percentages": {k: round(v / total * 100.0, 1) for k, v in counts.items()} if total else {}}
+
+    @staticmethod
+    def route_speeds(matches: List[Dict[str, Any]], route_distances: Dict[str, float]) -> List[Dict[str, Any]]:
+        """Average journey speed per OD pair, only where the route distance is configured (never guessed)."""
+        groups: Dict[str, List[float]] = {}
+        for m in matches:
+            groups.setdefault(f"{m['entry_point_code']}->{m['exit_point_code']}", []).append(float(m["travel_time_seconds"]))
+        out = []
+        for key, ts in sorted(groups.items()):
+            dist = route_distances.get(key)
+            if not dist or dist <= 0:
+                continue
+            mean_t = statistics.mean(ts)
+            out.append({"route": key, "distance_m": float(dist), "journeys": len(ts), "mean_travel_time_sec": round(mean_t, 1),
+                        "mean_journey_speed_kmh": round(dist / mean_t * 3.6, 1) if mean_t > 0 else None})
+        return out
+
+    @staticmethod
+    def counts(observations: List[Observation], interval_minutes: int = 15) -> Dict[str, Any]:
+        """Entry/exit totals, by point, by category and by time interval (bins are UTC-aligned; the UI shows them in
+        the study time zone)."""
+        step = max(1, int(interval_minutes)) * 60
+        entries = sum(1 for o in observations if o.point_type.upper() == "ENTRY")
+        exits = sum(1 for o in observations if o.point_type.upper() == "EXIT")
+        by_point: Dict[str, int] = {}
+        by_cat: Dict[str, int] = {}
+        bins: Dict[int, Dict[str, int]] = {}
+        for o in observations:
+            by_point[o.point_code] = by_point.get(o.point_code, 0) + 1
+            cat = _norm_cat(o.vehicle_category) or "UNKNOWN"
+            by_cat[cat] = by_cat.get(cat, 0) + 1
+            b = int(o.observation_timestamp // step) * step
+            slot = bins.setdefault(b, {"entries": 0, "exits": 0})
+            slot["entries" if o.point_type.upper() == "ENTRY" else "exits"] += 1
+        total = len(observations)
         return {
-            "total": total,
-            "counts": counts,
-            "percentages": percentages
+            "interval_minutes": step // 60, "total": total, "entries": entries, "exits": exits,
+            "by_point": dict(sorted(by_point.items())),
+            "by_category": dict(sorted(by_cat.items())),
+            "category_percent": {k: round(v / total * 100.0, 1) for k, v in sorted(by_cat.items())} if total else {},
+            "by_interval": [{"start": format_epoch_iso(b), **v, "total": v["entries"] + v["exits"]} for b, v in sorted(bins.items())],
         }
+
+
+def _safe_cell(value: Any) -> Any:
+    """Neutralise spreadsheet formula injection: text starting with = + - @ tab or CR is prefixed with '."""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
 
 
 class ReportExporter:
     @staticmethod
-    def export_csv(matches: List[Dict[str, Any]], od_matrix: Dict[str, Any]) -> str:
-        """Generates RFC 4180 compliant CSV of matched records and OD counts."""
-        lines = []
-        lines.append("# TrafficLab Matched Vehicle Journey Records")
-        lines.append("Match ID,Plate Suffix,Entry Point,Exit Point,Entry Time (UTC),Exit Time (UTC),Travel Time (sec),Speed (km/h),Confidence (%),Vehicle Category,Status")
-        
+    def export_csv(matches: List[Dict[str, Any]], od_matrix: Dict[str, Any],
+                   ambiguous: Optional[List[Dict[str, Any]]] = None) -> str:
+        buf = io.StringIO()
+        w = csv.writer(buf, lineterminator="\n")
+        w.writerow(["# TrafficLab matched journeys (probable matches; match_score is a heuristic, not a probability)"])
+        w.writerow(["match_id", "plate_suffix", "entry_point", "exit_point", "entry_time_utc", "exit_time_utc",
+                    "travel_time_sec", "avg_journey_speed_kmh", "match_score", "vehicle_category", "status"])
         for m in matches:
-            speed_str = str(m.get("estimated_speed_kmh") or "N/A")
-            lines.append(
-                f'"{m.get("id")}","{m.get("plate_suffix")}","{m.get("entry_point_code")}","{m.get("exit_point_code")}",'
-                f'"{m.get("entry_timestamp")}","{m.get("exit_timestamp")}",{m.get("travel_time_seconds")},'
-                f'{speed_str},{m.get("confidence_score")},"{m.get("vehicle_category")}","{m.get("match_status")}"'
-            )
+            w.writerow([_safe_cell(v) for v in (
+                m.get("id"), m.get("plate_suffix"), m.get("entry_point_code"), m.get("exit_point_code"),
+                m.get("entry_timestamp"), m.get("exit_timestamp"), m.get("travel_time_seconds"),
+                m.get("estimated_speed_kmh") if m.get("estimated_speed_kmh") is not None else "",
+                m.get("match_score"), m.get("vehicle_category"), m.get("match_status"))])
+        w.writerow([])
+        w.writerow(["# Ambiguous cases (not matched, need supervisor review)"])
+        w.writerow(["plate_suffix", "entry_point", "exit_point", "entry_time_utc", "exit_time_utc", "travel_time_sec", "match_score"])
+        for case in ambiguous or []:
+            for cp in case.get("candidate_pairs", []):
+                w.writerow([_safe_cell(v) for v in (case.get("plate_suffix"), cp.get("entry_point"), cp.get("exit_point"),
+                                                    cp.get("entry_time"), cp.get("exit_time"), cp.get("travel_time_sec"), cp.get("match_score"))])
+        w.writerow([])
+        w.writerow(["# Origin-Destination matrix (counts of matched + reviewed journeys)"])
+        dests = od_matrix.get("destinations", [])
+        w.writerow(["origin", *[_safe_cell(d) for d in dests], "total"])
+        for o in od_matrix.get("origins", []):
+            w.writerow([_safe_cell(o), *[od_matrix["counts"][o].get(d, 0) for d in dests], od_matrix["row_totals"].get(o, 0)])
+        w.writerow(["total", *[od_matrix["col_totals"].get(d, 0) for d in dests], od_matrix.get("grand_total", 0)])
+        return buf.getvalue()
 
-        lines.append("")
-        lines.append("# Origin-Destination Matrix Summary")
-        dest_header = ",".join([f'"{d}"' for d in od_matrix.get("destinations", [])])
-        lines.append(f"Origin,{dest_header},Total")
 
-        for orig in od_matrix.get("origins", []):
-            row_vals = [str(od_matrix["counts"][orig].get(d, 0)) for d in od_matrix.get("destinations", [])]
-            lines.append(f'"{orig}",{",".join(row_vals)},{od_matrix["row_totals"].get(orig, 0)}')
-
-        col_tot_vals = [str(od_matrix["col_totals"].get(d, 0)) for d in od_matrix.get("destinations", [])]
-        lines.append(f'"Total",{",".join(col_tot_vals)},{od_matrix.get("grand_total", 0)}')
-
-        return "\n".join(lines)
+def _observations_from_payload(raw: List[Dict[str, Any]]) -> List[Observation]:
+    out = []
+    for o in raw:
+        out.append(Observation(
+            id=str(o["id"]), study_id=str(o.get("study_id", "")), point_code=str(o["point_code"]),
+            point_type=str(o["point_type"]).upper(), plate_suffix=str(o["plate_suffix"]).zfill(3),
+            observation_timestamp=parse_iso_or_epoch(o["observation_timestamp"]),
+            vehicle_category=str(o.get("vehicle_category") or "UNKNOWN"), vehicle_color=o.get("vehicle_color"),
+            observer_id=o.get("observer_id")))
+    return out
 
 
-def run_cli():
-    """CLI dispatcher for IPC from Express server."""
+def apply_filters(obs: List[Observation], filters: Optional[Dict[str, Any]]) -> List[Observation]:
+    """Optional filters (spec 10B): time window [from, to], vehicle categories, observation points.
+    Note: filtering by point removes the counterpart observations too; this is documented in the UI."""
+    if not filters:
+        return obs
+    t_from = parse_iso_or_epoch(filters["from"]) if filters.get("from") else None
+    t_to = parse_iso_or_epoch(filters["to"]) if filters.get("to") else None
+    cats = {_norm_cat(c) for c in filters.get("categories") or []}
+    pts = {str(p) for p in filters.get("points") or []}
+    keep = []
+    for o in obs:
+        if t_from is not None and o.observation_timestamp < t_from:
+            continue
+        if t_to is not None and o.observation_timestamp > t_to:
+            continue
+        if cats and _norm_cat(o.vehicle_category) not in cats:
+            continue
+        if pts and o.point_code not in pts:
+            continue
+        keep.append(o)
+    return keep
+
+
+def build_report(payload: Dict[str, Any]) -> Dict[str, Any]:
+    obs = apply_filters(_observations_from_payload(payload.get("observations", [])), payload.get("filters"))
+    routes = payload.get("route_distances", {}) or {}
+    matcher = PartialPlateMatcher(
+        min_travel_time_sec=payload.get("min_travel_time_sec", 30.0),
+        max_travel_time_sec=payload.get("max_travel_time_sec", 900.0),
+        strict_category_match=payload.get("strict_category_match", False),
+        route_distances=routes)
+    result = matcher.match_observations(obs, payload.get("reviews"))
+    ms = result["matches"]
+    result["analytics"] = {
+        "od_matrix": TrafficAnalytics.calculate_od_matrix(ms),
+        "travel_time_stats": TrafficAnalytics.calculate_travel_time_stats(ms),
+        "vehicle_category_split": TrafficAnalytics.calculate_vehicle_category_split(ms),
+        "route_speeds": TrafficAnalytics.route_speeds(ms, routes),
+        "counts": TrafficAnalytics.counts(obs, int(payload.get("interval_minutes", 15))),
+    }
+    return result
+
+
+def run_cli() -> None:
+    """CLI used by the Node server: `python trafficlab_engine.py <report|export_csv|match|analytics>`, JSON on stdin."""
     if len(sys.argv) < 2:
-        print(json.dumps({"error": "No action specified. Use match, od, or stats."}))
+        print(json.dumps({"error": "No action specified"}))
         sys.exit(1)
-
     action = sys.argv[1].lower()
-    raw_input = sys.stdin.read().strip()
-    if not raw_input:
+    raw = sys.stdin.buffer.read().decode("utf-8").strip()
+    if not raw:
         print(json.dumps({"error": "Empty input payload"}))
         sys.exit(1)
-
     try:
-        payload = json.loads(raw_input)
-    except Exception as e:
-        print(json.dumps({"error": f"Invalid JSON payload: {e}"}))
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(json.dumps({"error": f"Invalid JSON payload: {exc}"}))
         sys.exit(1)
+    try:
+        if action == "report":
+            out = build_report(payload)
+        elif action == "match":
+            obs = apply_filters(_observations_from_payload(payload.get("observations", [])), payload.get("filters"))
+            out = PartialPlateMatcher(
+                payload.get("min_travel_time_sec", 30.0), payload.get("max_travel_time_sec", 900.0),
+                payload.get("strict_category_match", False), payload.get("route_distances", {})
+            ).match_observations(obs, payload.get("reviews"))
+        elif action == "analytics":
+            ms = payload.get("matches", [])
+            out = {"od_matrix": TrafficAnalytics.calculate_od_matrix(ms),
+                   "travel_time_stats": TrafficAnalytics.calculate_travel_time_stats(ms),
+                   "vehicle_category_split": TrafficAnalytics.calculate_vehicle_category_split(ms)}
+        elif action == "export_csv":
+            rep = build_report(payload)
+            out = {"csv": ReportExporter.export_csv(rep["matches"], rep["analytics"]["od_matrix"], rep["ambiguous"])}
+        else:
+            print(json.dumps({"error": f"Unknown action: {action}"}))
+            sys.exit(1)
+    except (KeyError, ValueError, TypeError) as exc:
+        print(json.dumps({"error": f"Invalid input: {exc}"}))
+        sys.exit(2)
+    sys.stdout.buffer.write(json.dumps(out, ensure_ascii=False).encode("utf-8"))
 
-    if action == "match":
-        obs_raw = payload.get("observations", [])
-        obs_list = []
-        for o in obs_raw:
-            obs_list.append(Observation(
-                id=str(o["id"]),
-                study_id=str(o.get("study_id", "")),
-                point_code=str(o["point_code"]),
-                point_type=str(o["point_type"]),
-                plate_suffix=str(o["plate_suffix"]).zfill(3),
-                observation_timestamp=parse_iso_or_epoch(o["observation_timestamp"]),
-                vehicle_category=str(o.get("vehicle_category", "CAR")),
-                vehicle_color=o.get("vehicle_color"),
-                observer_id=o.get("observer_id")
-            ))
-
-        matcher = PartialPlateMatcher(
-            min_travel_time_sec=payload.get("min_travel_time_sec", 30.0),
-            max_travel_time_sec=payload.get("max_travel_time_sec", 900.0),
-            strict_category_match=payload.get("strict_category_match", False),
-            route_distances=payload.get("route_distances", {})
-        )
-
-        result = matcher.match_observations(obs_list)
-        print(json.dumps(result))
-
-    elif action == "analytics":
-        matches = payload.get("matches", [])
-        od = TrafficAnalytics.calculate_od_matrix(matches)
-        tt_stats = TrafficAnalytics.calculate_travel_time_stats(matches)
-        cat_split = TrafficAnalytics.calculate_vehicle_category_split(matches)
-
-        response = {
-            "od_matrix": od,
-            "travel_time_stats": tt_stats,
-            "vehicle_category_split": cat_split
-        }
-        print(json.dumps(response))
-
-    elif action == "export_csv":
-        matches = payload.get("matches", [])
-        od = TrafficAnalytics.calculate_od_matrix(matches)
-        csv_content = ReportExporter.export_csv(matches, od)
-        print(json.dumps({"csv": csv_content}))
-
-    else:
-        print(json.dumps({"error": f"Unknown action: {action}"}))
-        sys.exit(1)
 
 if __name__ == "__main__":
     run_cli()

@@ -15,3 +15,11 @@ coverage/
 # local data
 data/
 *.sqlite
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# local runtime data
+.env.local
