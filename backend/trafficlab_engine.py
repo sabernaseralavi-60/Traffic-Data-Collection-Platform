@@ -60,7 +60,7 @@ class Observation:
     study_id: str
     point_code: str
     point_type: str  # 'ENTRY' or 'EXIT'
-    plate_suffix: str  # 3 digits kept as text (leading zeros are valid)
+    plate_suffix: Optional[str]  # 3 digits kept as text (leading zeros are valid); None = voice-only passage whose digits are not known yet
     observation_timestamp: float
     vehicle_category: str = "UNKNOWN"
     vehicle_color: Optional[str] = None
@@ -206,6 +206,9 @@ class PartialPlateMatcher:
                            reviews: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """Pipeline: split entry/exit -> apply stored supervisor reviews -> per-suffix candidate pairs inside the
         feasible window -> unique 1:1 pairs are MATCHED, conflicts are AMBIGUOUS (never forced)."""
+        # voice-only passages (digits not known yet) cannot be matched; they are counted separately and join once digits are added
+        pending = [o for o in observations if not o.plate_suffix]
+        observations = [o for o in observations if o.plate_suffix]
         entries = sorted((o for o in observations if o.point_type.strip().upper() == "ENTRY"),
                          key=lambda o: o.observation_timestamp)
         exits = sorted((o for o in observations if o.point_type.strip().upper() == "EXIT"),
@@ -298,7 +301,9 @@ class PartialPlateMatcher:
         times = [m.travel_time_seconds for m in matched]
         rate = (len(matched) / len(entries) * 100.0) if entries else 0.0
         summary = {
-            "total_observations": len(observations),
+            "total_observations": len(observations) + len(pending),
+            "pending_voice_entries": sum(1 for o in pending if o.point_type.strip().upper() == "ENTRY"),
+            "pending_voice_exits": sum(1 for o in pending if o.point_type.strip().upper() == "EXIT"),
             "total_entries": len(entries),
             "total_exits": len(exits),
             "matched_journeys": len(matched),
@@ -467,7 +472,7 @@ def _observations_from_payload(raw: List[Dict[str, Any]]) -> List[Observation]:
     for o in raw:
         out.append(Observation(
             id=str(o["id"]), study_id=str(o.get("study_id", "")), point_code=str(o["point_code"]),
-            point_type=str(o["point_type"]).upper(), plate_suffix=str(o["plate_suffix"]).zfill(3),
+            point_type=str(o["point_type"]).upper(), plate_suffix=(str(o["plate_suffix"]).zfill(3) if o.get("plate_suffix") else None),
             observation_timestamp=parse_iso_or_epoch(o["observation_timestamp"]),
             vehicle_category=str(o.get("vehicle_category") or "UNKNOWN"), vehicle_color=o.get("vehicle_color"),
             observer_id=o.get("observer_id")))

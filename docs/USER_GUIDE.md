@@ -6,6 +6,7 @@ The complete illustrated guide in Persian (administrator, observer, supervisor; 
 1. Sign in with the account your administrator created (usernames can be as short as 2 characters, e.g. `e1`; Persian digits are accepted; 5 wrong passwords lock the account for 15 minutes, each further lock twice as long, up to 24 h). You see **your assigned point** (e.g. `E01 - ENTRY`) at the top; if you have none, recording is disabled so nothing is saved at the wrong place.
 2. When a vehicle passes: tap its **last 3 digits** on the keypad (or type; Persian digits work; or use the voice button, which only fills the field - check it, then record). Exactly three digits are required; keep leading zeros (`042`).
 3. Optionally press the voice button: it records a short clip of this passage (max 6 s) and, where the browser supports it, fills in the digits; always check the digits before recording.
+3. **Voice-only mode** (checkbox above the voice button): every recording is saved at once as its own passage; the digits can be added later. A clip you recorded but did not submit is never discarded: it is saved as its own passage when you start the next recording.
 3. Optionally tap the vehicle category (never required; it is remembered as your default).
 4. Press **Record**. A green message confirms it. The same suffix twice is allowed (two vehicles can share a suffix); a short warning appears if the same number was entered seconds ago.
 5. Wrong entry? Use the trash icon beside it within 10 minutes (supervisors can undo any entry). The entry is marked undone, not erased.

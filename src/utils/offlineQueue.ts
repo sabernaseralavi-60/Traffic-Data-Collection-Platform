@@ -14,7 +14,8 @@ export interface QueuedObservation {
   study_id: string;
   point_code: string;
   point_type: 'ENTRY' | 'EXIT';
-  plate_suffix: string;
+  plate_suffix: string; // '' = voice-only passage
+  suffix_source?: 'TYPED' | 'VOICE';
   vehicle_category: string;
   observation_timestamp: string; // ISO 8601 UTC
   idempotency_key: string;

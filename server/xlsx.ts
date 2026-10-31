@@ -84,8 +84,8 @@ export async function buildWorkbook({ study, report, observations }: Input): Pro
   s.getColumn(1).width = 22;
 
   const raw = wb.addWorksheet('Observations');
-  raw.addRow(['Observation ID', 'Point', 'Type', 'Plate suffix', 'Category', 'Observed (local)', 'Observed (UTC)', 'Observer']);
-  for (const x of observations) raw.addRow([x.id, safeCell(x.point_code), x.point_type, String(x.plate_suffix), safeCell(x.vehicle_category), localTime(x.observed_at, tz), x.observed_at, safeCell(x.observer_name)]);
+  raw.addRow(['Observation ID', 'Point', 'Type', 'Plate suffix', 'Category', 'Observed (local)', 'Observed (UTC)', 'Observer', 'Voice clip', 'Suggested digits (offline tool)']);
+  for (const x of observations) raw.addRow([x.id, safeCell(x.point_code), x.point_type, x.plate_suffix == null ? '' : String(x.plate_suffix), safeCell(x.vehicle_category), localTime(x.observed_at, tz), x.observed_at, safeCell(x.observer_name), x.has_audio ? 'yes' : '', x.suggested_suffix ?? '']);
   raw.getColumn(4).numFmt = '@';
   bold(raw);
   raw.columns.forEach((col) => { col.width = 20; });

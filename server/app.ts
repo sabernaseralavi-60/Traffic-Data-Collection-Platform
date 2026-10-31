@@ -10,7 +10,7 @@ import { ts, type Db, type Query } from './db.ts';
 import { EngineError, engineOptions, runEngine } from './engine.ts';
 import { resetDemoObservations } from './seed.ts';
 import {
-  assignmentsSchema, batchSchema, categoryCreateSchema, correctSchema, mapCreateSchema, mapPatchSchema, categoryPatchSchema, loginSchema, matchSchema, observationSchema, pointsSchema,
+  assignmentsSchema, batchSchema, categoryCreateSchema, correctSchema, suggestionSchema, mapCreateSchema, mapPatchSchema, categoryPatchSchema, loginSchema, matchSchema, observationSchema, pointsSchema,
   reviewSchema, studyCreateSchema, MIN_PASSWORD, passwordTooShort, changePasswordSchema, studyPatchSchema, userCreateSchema, userPatchSchema, voidSchema, type MatchParams,
 } from './validation.ts';
 import { buildWorkbook } from './xlsx.ts';
@@ -20,7 +20,8 @@ const wrap = (fn: (req: Request, res: Response) => Promise<unknown>): RequestHan
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const OBS_COLS = `o.id, o.study_id, o.point_code, o.point_type, o.plate_suffix::text AS plate_suffix, o.vehicle_category, o.vehicle_color,
   ${ts('o.observed_at')} AS observation_timestamp, ${ts('o.received_at')} AS created_at, o.observer_id, u.full_name AS observer_name, o.idempotency_key,
-  (o.audio IS NOT NULL) AS has_audio, o.audio_ms`;
+  (o.audio IS NOT NULL) AS has_audio, o.audio_ms, o.suffix_source,
+  o.suggested_suffix::text AS suggested_suffix, o.suggested_source, o.suggested_conf`;
 const OBS_FROM = `FROM observations o JOIN users u ON u.id = o.observer_id`;
 const BOM = String.fromCharCode(0xfeff);
 const VOID_WINDOW_MS = 10 * 60_000;
@@ -432,8 +433,9 @@ export function createApp(cfg: Config, db: Db) {
 
   // ------------------------------------------------------------------ observations
   async function record(user: AuthUser, input: ReturnType<typeof observationSchema.parse>, now = new Date()): Promise<Recorded> {
-    const suffix = normalizePlateDigits(input.plate_suffix);
-    if (suffix.length !== 3) return rejected('invalid_suffix', 'The plate suffix must be exactly 3 digits');
+    const typed = normalizePlateDigits(input.plate_suffix ?? '');
+    if (typed.length !== 0 && typed.length !== 3) return rejected('invalid_suffix', 'The plate suffix must be exactly 3 digits');
+    const suffix: string | null = typed.length === 3 ? typed : null; // null = voice-only passage, digits added later
     const [study] = await q('SELECT id, status, audio_enabled FROM studies WHERE id = $1', [input.study_id]);
     const asg = await q(
       `SELECT a.point_code, p.point_type, a.period_start, a.period_end FROM study_assignments a
@@ -449,11 +451,12 @@ export function createApp(cfg: Config, db: Db) {
     if (point.period_end && observed.getTime() > new Date(point.period_end).getTime() + slack) return rejected('outside_period', 'The observation is after your assigned period');
     let category = input.vehicle_category || 'UNKNOWN';
     if (!(await q('SELECT 1 FROM vehicle_categories WHERE code = $1', [category])).length) category = 'UNKNOWN'; // never lose a sighting over a label
-    const clip = study.audio_enabled ? decodeClip(input) : null; // a bad or disabled clip never blocks the sighting itself
+    const clip = study.audio_enabled ? decodeClip(input) : null; // a bad or disabled clip never blocks a sighting that has digits
+    if (suffix === null && !clip) return rejected('empty_passage', 'Nothing to record: enter the digits or send a valid voice clip');
     const ins = await q(
-      `INSERT INTO observations (study_id, point_code, point_type, plate_suffix, vehicle_category, vehicle_color, observed_at, observer_id, idempotency_key, audio, audio_mime, audio_ms)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (observer_id, idempotency_key) DO NOTHING RETURNING id`,
-      [input.study_id, point.point_code, point.point_type, suffix, category, input.vehicle_color ?? null, observed.toISOString(), user.id, input.idempotency_key, clip?.bytes ?? null, clip?.mime ?? null, clip?.ms ?? null]);
+      `INSERT INTO observations (study_id, point_code, point_type, plate_suffix, vehicle_category, vehicle_color, observed_at, observer_id, idempotency_key, audio, audio_mime, audio_ms, suffix_source)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT (observer_id, idempotency_key) DO NOTHING RETURNING id`,
+      [input.study_id, point.point_code, point.point_type, suffix, category, input.vehicle_color ?? null, observed.toISOString(), user.id, input.idempotency_key, clip?.bytes ?? null, clip?.mime ?? null, clip?.ms ?? null, suffix && input.suffix_source === 'VOICE' ? 'VOICE' : 'TYPED']);
     const rows = await q(
       `SELECT ${OBS_COLS} ${OBS_FROM} WHERE ${ins.length ? 'o.id = $1' : 'o.observer_id = $1 AND o.idempotency_key = $2'}`,
       ins.length ? [ins[0].id] : [user.id, input.idempotency_key]);
@@ -515,6 +518,15 @@ export function createApp(cfg: Config, db: Db) {
     res.send(Buffer.from(o.audio));
   }));
 
+  /** The offline speech-to-digits tool (tools/transcribe_clips.py) stores what it heard as a SUGGESTION; nothing is changed until a supervisor accepts it. */
+  api.post('/observations/:id/suggestion', requireRole('ADMIN', 'SUPERVISOR'), wrap(async (req, res) => {
+    const id = idParam(req);
+    const b = suggestionSchema.parse(req.body);
+    const rows = await q(`UPDATE observations SET suggested_suffix = $2, suggested_source = $3, suggested_conf = $4, suggested_at = now() WHERE id = $1 AND voided_at IS NULL AND audio IS NOT NULL RETURNING id`, [id, b.suffix, b.source, b.confidence ?? null]);
+    if (!rows.length) throw new HttpError(404, 'Observation with a voice clip not found', 'not_found');
+    res.json({ ok: true });
+  }));
+
   /** Supervisor fixes a wrong suffix (e.g. after listening to the clip): the old event is voided, a new one keeps time, point, observer and clip. */
   api.post('/observations/:id/correct', requireRole('ADMIN', 'SUPERVISOR'), wrap(async (req, res) => {
     const id = idParam(req);
@@ -524,6 +536,10 @@ export function createApp(cfg: Config, db: Db) {
     const created = await db.tx(async (tq) => {
       const [o] = await tq('SELECT * FROM observations WHERE id = $1 AND voided_at IS NULL', [id]);
       if (!o) throw new HttpError(404, 'Observation not found', 'not_found');
+      if (o.plate_suffix === null) { // a voice-only passage is COMPLETED in place (nothing was wrong before: the digits were simply not known yet)
+        await tq('UPDATE observations SET plate_suffix = $2, suffix_source = $3 WHERE id = $1', [id, suffix, b.source]);
+        return id;
+      }
       if (String(o.plate_suffix).trim() === suffix) throw new HttpError(400, 'The suffix is already ' + suffix, 'no_change');
       await tq('UPDATE observations SET voided_at = now(), voided_by = $2, void_reason = $3 WHERE id = $1', [id, req.user!.id, `corrected to ${suffix}${b.reason ? ': ' + b.reason : ''}`]);
       const [n] = await tq(
@@ -532,7 +548,7 @@ export function createApp(cfg: Config, db: Db) {
         [o.study_id, o.point_code, o.point_type, suffix, o.vehicle_category, o.vehicle_color, o.observed_at, o.observer_id, `corr-${crypto.randomUUID()}`, o.audio, o.audio_mime, o.audio_ms]);
       return n.id as string;
     });
-    await audit(req.user, 'observation_corrected', 'observation', id, { new_id: created, suffix });
+    await audit(req.user, created === id ? 'observation_completed' : 'observation_corrected', 'observation', id, { new_id: created, suffix, source: b.source });
     res.json({ ok: true, id: created });
   }));
 
@@ -541,7 +557,7 @@ export function createApp(cfg: Config, db: Db) {
   async function enginePayload(studyId: string, params: MatchParams) {
     const observations = await q(
       `SELECT o.id, o.study_id, o.point_code, o.point_type, o.plate_suffix::text AS plate_suffix, o.vehicle_category, o.vehicle_color,
-              ${ts('o.observed_at')} AS observation_timestamp, o.observer_id
+              ${ts('o.observed_at')} AS observation_timestamp, o.observer_id, (o.audio IS NOT NULL) AS has_audio, o.suggested_suffix::text AS suggested_suffix
        FROM observations o WHERE o.study_id = $1 AND o.voided_at IS NULL ORDER BY o.observed_at, o.id`, [studyId]);
     const reviews = await q(`SELECT entry_observation_id AS entry_id, exit_observation_id AS exit_id, decision, note FROM match_reviews WHERE study_id = $1`, [studyId]);
     const routes = await q(`SELECT origin_code, destination_code, distance_meters::float8 AS d FROM route_distances WHERE study_id = $1`, [studyId]);

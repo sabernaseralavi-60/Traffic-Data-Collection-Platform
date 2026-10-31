@@ -255,6 +255,39 @@ test.describe('supervisor and administrator', () => {
     await expect(page.getByTestId('obs-row-886')).toHaveCount(0);
   });
 
+
+  test('voice-only mode: every recording is saved as its own passage and none is lost', async ({ page }) => {
+    const project = test.info().project.name;
+    await login(page, 'e1', pw('e1'));
+    await page.getByTestId('voice-only-switch').locator('input').check();
+    for (let i = 1; i <= 3; i++) {
+      await page.getByTestId('voice-button').click();
+      await page.waitForTimeout(1500);
+      await page.getByTestId('voice-button').click();                                   // stop = save
+      await expect(page.getByTestId('voice-saved')).toHaveText(new RegExp(`${i}`));     // saved without pressing Record
+    }
+    await expect(page.getByTestId('recent-list').locator('li', { hasText: '🎤' })).toHaveCount(3, { timeout: 15_000 }); // three separate voice passages
+    await expect(page.getByTestId('recent-list')).toContainText(/فقط صدا|voice only/);
+    await shot(page, 'voice-only', project);
+    await page.getByTestId('logout').click();
+    await expect(page.getByTestId('login-form')).toBeVisible();
+
+    await login(page, 'sv', pw('sv'));
+    await useDemoStudy(page);
+    await page.getByTestId('tab-observations').click();
+    await expect(page.getByTestId('need-digits')).toContainText('3');
+    await expect(page.getByTestId('obs-row-voice')).toHaveCount(3);
+    await page.getByTestId('obs-row-voice').first().getByTestId('correct-open').click();
+    await page.getByTestId('correct-input').fill('246');
+    await page.getByTestId('correct-save').click();
+    await expect(page.getByTestId('obs-row-246')).toBeVisible();                        // completed in place, clip kept
+    await expect(page.getByTestId('obs-row-246').getByTestId('play-246')).toBeVisible();
+    await expect(page.getByTestId('obs-row-voice')).toHaveCount(2);
+    page.on('dialog', (d) => d.accept());                                               // leave the shared demo study as we found it
+    for (const sel of ['obs-row-246', 'obs-row-voice', 'obs-row-voice']) await page.getByTestId(sel).first().getByLabel(/undo entry|لغو ثبت/i).click();
+    await expect(page.getByTestId('obs-row-voice')).toHaveCount(0);
+  });
+
   test('persian / RTL layout', async ({ page }) => {
     const project = test.info().project.name;
     await page.goto('/');

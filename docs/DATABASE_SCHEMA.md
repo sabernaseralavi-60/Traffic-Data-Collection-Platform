@@ -13,6 +13,7 @@ keys, check constraints, indexes, `timestamptz` everywhere.
 | `study_assignments` | observer -> point, optional period; deleting a point that is assigned is blocked |
 | `vehicle_categories` | configurable list (code, EN/FA label, active) |
 | `observations` | **immutable events** (optional `audio` bytea + `audio_mime` + `audio_ms`; no audio is stored when the study has `audio_enabled = false`): `plate_suffix char(3)` text with `^[0-9]{3}$` check (leading zeros valid), `observed_at` (original time), `received_at`, observer, point; unique `(observer_id, idempotency_key)`; `voided_*` columns instead of deletion |
+| (observations, voice-only) | `plate_suffix` is NULL for a passage recorded by voice alone (a CHECK requires digits or a clip); `suffix_source` TYPED/VOICE/SUPERVISOR/SUGGESTION; `suggested_suffix/source/conf/at` hold the offline tool's suggestion |
 | `match_reviews` | supervisor decisions REVIEWED / REJECTED per (entry, exit) pair |
 | `audit_logs` | who did what (logins, configuration, voids, reviews, exports, purges) |
 | `schema_migrations` | applied migrations |

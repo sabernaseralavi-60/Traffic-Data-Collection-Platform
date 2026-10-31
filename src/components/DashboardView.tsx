@@ -76,6 +76,7 @@ export const DashboardView: React.FC<Props> = ({ study, lang, user, report, obse
         <Kpi id="rate" label={t.stat_matching_rate} value={s ? `${s.matching_rate_percent}%` : '-'} tone="text-teal-300" hint={pick(lang, 'matched ÷ entries; probable, not certain', 'منطبق ÷ ورودی؛ محتمل، نه قطعی')} />
         <Kpi id="ambiguous" label={t.stat_ambiguous} value={s?.ambiguous_cases ?? '-'} tone="text-amber-400" hint={pick(lang, 'need supervisor review', 'نیازمند بررسی سرپرست')} />
         <Kpi id="unmatched" label={pick(lang, 'Unmatched entries / exits', 'ورودی / خروجی بدون جفت')} value={s ? `${s.unmatched_entries} / ${s.unmatched_exits}` : '-'} tone="text-rose-400" />
+        <Kpi id="pending-voice" label={pick(lang, 'Voice-only passages awaiting digits', 'تردهای صوتیِ منتظر رقم')} value={s ? (s.pending_voice_entries ?? 0) + (s.pending_voice_exits ?? 0) : '-'} tone="text-fuchsia-300" hint={pick(lang, 'counted in volumes, not yet matched', 'در حجم شمرده می‌شوند، هنوز جفت نشده‌اند')} />
         <Kpi id="mean-tt" label={t.stat_mean_tt} value={s && s.matched_journeys ? fmtDuration(s.mean_travel_time_sec) : '-'} hint={s && s.matched_journeys ? `${pick(lang, 'median', 'میانه')} ${fmtDuration(s.median_travel_time_sec)}` : undefined} />
       </div>
 

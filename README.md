@@ -41,6 +41,11 @@ database. It contains a labelled **DEMO** study; accounts are given to testers b
 Set `SESSION_SECRET`, `ADMIN_PASSWORD` and (recommended) `DATABASE_URL` - see [.env.example](.env.example) and
 [docs/DEPLOY.md](docs/DEPLOY.md). A [Dockerfile](Dockerfile) packages Node and the Python engine together.
 
+## Offline digit extraction from voice clips (optional)
+`tools/transcribe_clips.py` runs the free offline Vosk Persian model on a computer of yours, restricted to the ten digit words, and stores *suggestions* for
+voice-only passages; a supervisor accepts them on the "Recorded passages" page. See the docstring of the script and section 6-5 of the Persian guide.
+It is not needed by the server (`pip install -r tools/requirements-asr.txt`).
+
 ## Documentation
 
 [Architecture](docs/ARCHITECTURE.md) · [API](docs/API_SPECIFICATION.md) · [Database](docs/DATABASE_SCHEMA.md) ·

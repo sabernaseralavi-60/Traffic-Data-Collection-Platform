@@ -92,7 +92,7 @@ export interface VehicleObservation {
   study_id: string;
   point_code: string;
   point_type: PointType;
-  plate_suffix: string;
+  plate_suffix: string | null; // null = voice-only passage: the digits are added later
   vehicle_category: string;
   vehicle_color?: string | null;
   observation_timestamp: string;
@@ -102,6 +102,10 @@ export interface VehicleObservation {
   created_at?: string;
   has_audio?: boolean;
   audio_ms?: number | null;
+  suffix_source?: 'TYPED' | 'VOICE' | 'SUPERVISOR' | 'SUGGESTION';
+  suggested_suffix?: string | null;
+  suggested_source?: string | null;
+  suggested_conf?: number | null;
   /** local only: queued on this device and not yet accepted by the server */
   pending?: boolean;
 }
@@ -160,6 +164,8 @@ export interface MatchingSummary {
   ambiguous_exits: number;
   unmatched_entries: number;
   unmatched_exits: number;
+  pending_voice_entries?: number;
+  pending_voice_exits?: number;
   matching_rate_percent: number;
   mean_travel_time_sec: number;
   median_travel_time_sec: number;

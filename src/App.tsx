@@ -124,7 +124,7 @@ export default function App() {
         const chunk: typeof pending = [];
         let bytes = 0;
         while (i < pending.length && chunk.length < 100 && (chunk.length === 0 || bytes + (pending[i].audio_b64?.length ?? 0) < 1_500_000)) { bytes += pending[i].audio_b64?.length ?? 0; chunk.push(pending[i++]); }
-        const body = chunk.map((p) => ({ study_id: p.study_id, point_code: p.point_code, plate_suffix: p.plate_suffix, vehicle_category: p.vehicle_category, observed_at: p.observation_timestamp, idempotency_key: p.idempotency_key, ...(p.audio_b64 ? { audio_b64: p.audio_b64, audio_mime: p.audio_mime, audio_ms: p.audio_ms } : {}) }));
+        const body = chunk.map((p) => ({ study_id: p.study_id, point_code: p.point_code, ...(p.plate_suffix ? { plate_suffix: p.plate_suffix, suffix_source: p.suffix_source } : {}), vehicle_category: p.vehicle_category, observed_at: p.observation_timestamp, idempotency_key: p.idempotency_key, ...(p.audio_b64 ? { audio_b64: p.audio_b64, audio_mime: p.audio_mime, audio_ms: p.audio_ms } : {}) }));
         const res = await api<{ results: SyncResult[] }>('POST', '/observations/batch-sync', { observations: body });
         await applySyncResults(user.id, res.results); // only accepted items become SYNCED; refused ones stay visible as ERROR
       }

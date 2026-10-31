@@ -411,6 +411,51 @@ describe('full MVP acceptance scenario (spec section 19)', () => {
     expect(r.data.observation.has_audio).toBe(false);
     await admin.call('PATCH', `/api/v1/studies/${studyId}`, { audio_enabled: true });
   });
+
+  it('voice-only passages: every clip is its own passage, none overwrites another, digits can come later', async () => {
+    const vo = (key: string, at: string) => o1.call('POST', '/api/v1/observations', { study_id: studyId, observed_at: `2026-10-30T${at}+03:30`, idempotency_key: key, audio_b64: clip(3000), audio_mime: 'audio/webm', audio_ms: 2000 });
+    const a = await vo('voice-only-01', '10:00:00');
+    const b = await vo('voice-only-02', '10:00:20');
+    const c = await vo('voice-only-03', '10:00:40');
+    for (const r of [a, b, c]) {
+      expect(r.status, JSON.stringify(r.data)).toBe(201);
+      expect(r.data.observation.plate_suffix).toBeNull();
+      expect(r.data.observation.has_audio).toBe(true);
+    }
+    expect(new Set([a, b, c].map((r) => r.data.observation.id)).size).toBe(3);
+    const bytes = await Promise.all([a, b, c].map((r) => sup.call('GET', `/api/v1/observations/${r.data.observation.id}/audio`)));
+    expect(bytes.every((x) => x.status === 200 && (x.data as Buffer).length === 3004)).toBe(true); // each clip is kept separately
+    const rep = (await sup.call('POST', `/api/v1/studies/${studyId}/match`, {})).data;
+    expect(rep.summary.pending_voice_entries).toBeGreaterThanOrEqual(3);          // counted, not matched
+    expect(rep.analytics.counts.total).toBeGreaterThanOrEqual(rep.summary.total_entries + rep.summary.total_exits + 3);
+    expect((await o1.call('POST', '/api/v1/observations', { study_id: studyId, idempotency_key: 'voice-only-none', observed_at: '2026-10-30T10:01:00+03:30' })).data.code).toBe('empty_passage');
+    expect((await o1.call('POST', '/api/v1/observations', { study_id: studyId, idempotency_key: 'voice-only-bad1', audio_b64: Buffer.alloc(500, 1).toString('base64'), audio_mime: 'audio/webm' })).data.code).toBe('empty_passage');
+    const again = await vo('voice-only-01', '10:00:00');
+    expect([again.status, again.data.status]).toEqual([200, 'duplicate']);
+  });
+
+  it('an offline tool stores a SUGGESTION; a supervisor accepts it and the passage is completed in place', async () => {
+    const rec = (await o1.call('POST', '/api/v1/observations', { study_id: studyId, observed_at: '2026-10-30T10:05:00+03:30', idempotency_key: 'voice-sugg-001', audio_b64: clip(3000), audio_mime: 'audio/webm' })).data.observation;
+    const body = { suffix: '387', source: 'vosk-test', confidence: 0.91 };
+    expect((await o1.call('POST', `/api/v1/observations/${rec.id}/suggestion`, body)).status).toBe(403); // observers cannot write suggestions
+    expect((await sup.call('POST', `/api/v1/observations/${rec.id}/suggestion`, { ...body, suffix: '38' })).status).toBe(400);
+    expect((await sup.call('POST', `/api/v1/observations/${rec.id}/suggestion`, body)).status).toBe(200);
+    const listed = (await sup.call('GET', `/api/v1/studies/${studyId}/observations`)).data.find((o: any) => o.id === rec.id);
+    expect([listed.plate_suffix, listed.suggested_suffix, listed.suggested_source, listed.suggested_conf]).toEqual([null, '387', 'vosk-test', 0.91]); // nothing changed yet
+    const ok = await sup.call('POST', `/api/v1/observations/${rec.id}/correct`, { plate_suffix: '387', source: 'SUGGESTION' });
+    expect(ok.status, JSON.stringify(ok.data)).toBe(200);
+    expect(ok.data.id).toBe(rec.id); // completed in place: same event, same time, same clip
+    const after = (await sup.call('GET', `/api/v1/studies/${studyId}/observations`)).data.find((o: any) => o.id === rec.id);
+    expect([after.plate_suffix, after.suffix_source, after.has_audio, after.observation_timestamp]).toEqual(['387', 'SUGGESTION', true, rec.observation_timestamp]);
+    // a typed passage without audio cannot get a suggestion
+    const typed = (await o1.call('POST', '/api/v1/observations', { study_id: studyId, plate_suffix: '654', observed_at: '2026-10-30T10:06:00+03:30', idempotency_key: 'typed-no-audio' })).data.observation;
+    expect((await sup.call('POST', `/api/v1/observations/${typed.id}/suggestion`, body)).status).toBe(404);
+    // a suggestion that differs from digits already entered is shown, but changes nothing until accepted
+    const withClip = (await o1.call('POST', '/api/v1/observations', { study_id: studyId, plate_suffix: '111', observed_at: '2026-10-30T10:07:00+03:30', idempotency_key: 'typed-with-clip', audio_b64: clip(3000), audio_mime: 'audio/webm' })).data.observation;
+    await sup.call('POST', `/api/v1/observations/${withClip.id}/suggestion`, { ...body, suffix: '112' });
+    const row = (await sup.call('GET', `/api/v1/studies/${studyId}/observations`)).data.find((o: any) => o.id === withClip.id);
+    expect([row.plate_suffix, row.suggested_suffix]).toEqual(['111', '112']);
+  });
 });
 
 describe('demo data and audit', () => {

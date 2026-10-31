@@ -77,18 +77,62 @@ export const FieldCollector: React.FC<Props> = ({ user, study, assignments, cate
     rec.onresult = (ev: any) => {
       const heard = ev.results[0][0].transcript as string;
       const digits = parsePersianSpokenDigits(heard);
-      if (digits) { setPlate(digits.slice(-3)); setNotice({ kind: 'ok', text: pick(lang, `Heard "${heard}" → ${digits.slice(-3)} (check, then record)`, `شنیده شد «${heard}» ← ${digits.slice(-3)} (بررسی کنید و ثبت بزنید)`) }); }
+      if (digits) { plateRef.current = digits.slice(-3); setPlate(digits.slice(-3)); setNotice({ kind: 'ok', text: pick(lang, `Heard "${heard}" → ${digits.slice(-3)} (check, then record)`, `شنیده شد «${heard}» ← ${digits.slice(-3)} (بررسی کنید و ثبت بزنید)`) }); }
       else setNotice({ kind: 'warn', text: pick(lang, `No digits found in "${heard}"`, `رقمی در «${heard}» پیدا نشد`) });
     };
     recognitionRef.current = rec;
     return () => { try { rec.abort(); } catch { /* ignore */ } };
   }, [speechSupported, lang]);
 
+  const [voiceOnly, setVoiceOnly] = useState<boolean>(() => localStorage.getItem('tl_voice_only') === '1');
+  const voiceOnlyRef = useRef(voiceOnly);
+  voiceOnlyRef.current = voiceOnly;
+  const plateRef = useRef(plate);
+  plateRef.current = plate;
+  const [savedVoice, setSavedVoice] = useState(0); // voice passages saved on this screen (visible confirmation)
+
+  /** Stores ONE passage (digits and/or a voice clip): online if possible, otherwise in the queue on this device. Never discards anything. */
+  const submit = async (suffix: string | null, c: Clip | null, source: 'TYPED' | 'VOICE', when: number): Promise<boolean> => {
+    if (!study || !point) return false;
+    const clipB64 = c ? await blobToBase64(c.blob).catch(() => '') : '';
+    if (!suffix && !clipB64) { setNotice({ kind: 'warn', text: pick(lang, 'Nothing to record: no digits and no sound.', 'چیزی برای ثبت نیست: نه رقم هست نه صدا.') }); return false; }
+    const dup = !!suffix && [...serverObservations, ...queued].some((o) => o.point_code === point.point_code && o.plate_suffix === suffix && when - new Date(o.observation_timestamp).getTime() < 12_000);
+    const audio = clipB64 ? { audio_b64: clipB64, audio_mime: c!.mime, audio_ms: c!.ms } : {};
+    const item: QueuedObservation = {
+      id: crypto.randomUUID(), owner_user_id: user.id, study_id: study.id, point_code: point.point_code, point_type: point.point_type,
+      plate_suffix: suffix ?? '', ...(suffix ? { suffix_source: source } : {}), vehicle_category: category, observation_timestamp: new Date(when).toISOString(), idempotency_key: crypto.randomUUID(),
+      ...audio, sync_status: 'PENDING', queued_at: Date.now(),
+    };
+    const label = suffix ? `#${suffix}` : pick(lang, '(voice only)', '(فقط صدا)');
+    try {
+      if (!isOnline) throw new ApiError(0, 'offline', 'network');
+      await api('POST', '/observations', { study_id: item.study_id, point_code: item.point_code, ...(suffix ? { plate_suffix: suffix, suffix_source: source } : {}), vehicle_category: category, observed_at: item.observation_timestamp, idempotency_key: item.idempotency_key, ...audio });
+      setNotice({ kind: dup ? 'warn' : 'ok', text: (dup ? t.duplicate_warning + ' ' : '') + pick(lang, `Recorded ${label} at ${point.point_code}`, `ثبت شد ${label} در ${point.point_code}`) });
+    } catch (err) {
+      const transient = err instanceof ApiError && (err.status === 0 || err.status >= 500 || err.status === 401 || err.status === 429);
+      if (!transient) { setNotice({ kind: 'error', text: pick(lang, 'Not recorded: ', 'ثبت نشد: ') + errorText(err) }); return false; }
+      await saveOfflineObservation(item); // never lose a sighting to a connectivity problem
+      setNotice({ kind: 'warn', text: pick(lang, `Saved on this device ${label}; it will upload when the connection returns.`, `روی همین دستگاه ذخیره شد ${label}؛ با برگشت اتصال ارسال می‌شود.`) });
+    }
+    onChanged();
+    return true;
+  };
+
   const finishClip = async () => {
     const r = recorderRef.current;
     recorderRef.current = null;
     setListening(false);
-    if (r) setClip(await r.stop());
+    if (!r) return;
+    const c = await r.stop();
+    if (!c) { setNotice({ kind: 'warn', text: pick(lang, 'No sound was recorded. Try again, closer to your mouth.', 'صدایی ضبط نشد. دوباره و نزدیک‌تر به دهان امتحان کنید.') }); return; }
+    if (voiceOnlyRef.current) {
+      // voice-only mode: the passage is saved at once. Digits are attached only if the browser recognised exactly three; otherwise they are extracted later.
+      const heard = normalizePlateDigits(plateRef.current);
+      const ok = await submit(heard.length === 3 ? heard : null, c, 'VOICE', c.startedAt);
+      if (ok) { setPlate(''); setSavedVoice((n) => n + 1); }
+    } else {
+      setClip(c);
+    }
   };
 
   const toggleVoice = async () => {
@@ -98,11 +142,17 @@ export const FieldCollector: React.FC<Props> = ({ user, study, assignments, cate
       await finishClip();
       return;
     }
+    if (clip) { // a clip that was not recorded yet is saved as its own passage instead of being thrown away by the next recording
+      const kept = normalizePlateDigits(plate);
+      await submit(kept.length === 3 ? kept : null, clip, 'TYPED', clip.startedAt);
+      setClip(null);
+      setPlate('');
+      setSavedVoice((n) => n + 1);
+    }
     srFailedRef.current = false;
-    setClip(null);
     if (audioOn) {
       try {
-        recorderRef.current = await startClip((c) => { recorderRef.current = null; setListening(false); setClip(c); try { rec?.stop(); } catch { /* done */ } });
+        recorderRef.current = await startClip((c) => { recorderRef.current = null; setListening(false); try { rec?.stop(); } catch { /* done */ } if (voiceOnlyRef.current && c) { void submit(normalizePlateDigits(plateRef.current).length === 3 ? normalizePlateDigits(plateRef.current) : null, c, 'VOICE', c.startedAt).then((ok) => { if (ok) { setPlate(''); setSavedVoice((n) => n + 1); } }); } else setClip(c); });
         setListening(true);
       } catch {
         setNotice({ kind: 'warn', text: pick(lang, 'The microphone is not available for recording; you can still type the digits.', 'میکروفن برای ضبط در دسترس نیست؛ همچنان می‌توانید رقم‌ها را تایپ کنید.') });
@@ -123,34 +173,8 @@ export const FieldCollector: React.FC<Props> = ({ user, study, assignments, cate
     if (suffix.length !== 3) { setNotice({ kind: 'warn', text: pick(lang, 'Enter exactly 3 digits (e.g. 042).', 'دقیقاً ۳ رقم وارد کنید (مثلاً ۰۴۲).') }); return; }
     lockRef.current = true;
     setBusy(true);
-    const now = Date.now();
-    const dup = [...serverObservations, ...queued].some((o) => o.point_code === point.point_code && o.plate_suffix === suffix && now - new Date(o.observation_timestamp).getTime() < 12_000);
-    const clipB64 = clip ? await blobToBase64(clip.blob).catch(() => '') : '';
-    const item: QueuedObservation = {
-      id: crypto.randomUUID(), owner_user_id: user.id, study_id: study.id, point_code: point.point_code, point_type: point.point_type,
-      plate_suffix: suffix, vehicle_category: category, observation_timestamp: new Date(now).toISOString(), idempotency_key: crypto.randomUUID(),
-      ...(clipB64 ? { audio_b64: clipB64, audio_mime: clip!.mime, audio_ms: clip!.ms } : {}),
-      sync_status: 'PENDING', queued_at: now,
-    };
-    try {
-      if (!isOnline) throw new ApiError(0, 'offline', 'network');
-      await api('POST', '/observations', { study_id: item.study_id, point_code: item.point_code, plate_suffix: suffix, vehicle_category: category, observed_at: item.observation_timestamp, idempotency_key: item.idempotency_key, ...(clipB64 ? { audio_b64: clipB64, audio_mime: clip!.mime, audio_ms: clip!.ms } : {}) });
-      setNotice({ kind: dup ? 'warn' : 'ok', text: (dup ? t.duplicate_warning + ' ' : '') + pick(lang, `Recorded #${suffix} at ${point.point_code}`, `ثبت شد #${suffix} در ${point.point_code}`) });
-    } catch (err) {
-      const transient = err instanceof ApiError && (err.status === 0 || err.status >= 500 || err.status === 401 || err.status === 429);
-      if (transient) {
-        await saveOfflineObservation(item); // never lose a sighting to a connectivity problem
-        setNotice({ kind: 'warn', text: pick(lang, `Saved on this device #${suffix}; it will upload when the connection returns.`, `روی همین دستگاه ذخیره شد #${suffix}؛ با برگشت اتصال ارسال می‌شود.`) });
-      } else {
-        setNotice({ kind: 'error', text: pick(lang, 'Not recorded: ', 'ثبت نشد: ') + errorText(err) });
-        lockRef.current = false;
-        setBusy(false);
-        return;
-      }
-    }
-    setPlate('');
-    setClip(null);
-    onChanged();
+    const ok = await submit(suffix, clip, 'TYPED', Date.now());
+    if (ok) { setPlate(''); setClip(null); }
     lockRef.current = false;
     setBusy(false);
     inputRef.current?.focus();
@@ -226,6 +250,13 @@ export const FieldCollector: React.FC<Props> = ({ user, study, assignments, cate
             onChange={(e) => setPlate(normalizePlateDigits(e.target.value).slice(0, 3))}
             className="w-full h-20 text-center font-mono text-5xl font-black tracking-widest bg-slate-950 border-2 border-slate-700 focus:border-teal-400 rounded-2xl text-white placeholder-slate-600 focus:outline-none focus:ring-4 focus:ring-teal-500/20"
           />
+          {audioOn && (
+            <label className="flex items-start gap-2 text-[11px] text-slate-300 p-2 rounded-xl bg-slate-950 border border-slate-800" data-testid="voice-only-switch">
+              <input type="checkbox" checked={voiceOnly} onChange={(e) => { setVoiceOnly(e.target.checked); localStorage.setItem('tl_voice_only', e.target.checked ? '1' : '0'); }} className="mt-0.5" />
+              <span>{pick(lang, 'Voice-only mode: every recording is saved at once as its own passage (no need to press Record). The digits can be added later by the supervisor.', 'حالت فقط صدا: هر ضبط بلافاصله به‌عنوان یک تردد جدا ذخیره می‌شود (نیازی به زدن «ثبت» نیست). رقم‌ها را بعداً سرپرست اضافه می‌کند.')}
+              {savedVoice > 0 && <b className="ms-2 text-emerald-300" data-testid="voice-saved">{pick(lang, `${savedVoice} saved here`, `${savedVoice} مورد ذخیره شد`)}</b>}</span>
+            </label>
+          )}
           <div className="flex gap-2">
             <button type="button" onClick={() => void toggleVoice()} disabled={(!speechSupported && !audioOn) || !canRecord} title={speechSupported || audioOn ? '' : t.voice_unsupported} data-testid="voice-button"
               className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-xs font-bold border disabled:opacity-40 ${listening ? 'bg-rose-600 text-white border-rose-500 animate-pulse' : 'bg-slate-800 text-teal-300 border-teal-500/30'}`}>
@@ -290,11 +321,11 @@ export const FieldCollector: React.FC<Props> = ({ user, study, assignments, cate
             {recent.map((o) => (
               <li key={o.id} className={`flex items-center justify-between p-2.5 rounded-xl border text-xs ${o.error ? 'bg-rose-950/40 border-rose-800/60' : 'bg-slate-950/60 border-slate-800'}`}>
                 <div className="flex items-center gap-3 min-w-0">
-                  <span className="font-mono text-base font-extrabold text-white tracking-widest bg-slate-800 px-2 py-0.5 rounded-lg border border-slate-700">{o.plate_suffix}</span>
+                  <span className="font-mono text-base font-extrabold text-white tracking-widest bg-slate-800 px-2 py-0.5 rounded-lg border border-slate-700">{o.plate_suffix || '🎤'}</span>
                   <div className="min-w-0">
                     <span className="font-semibold text-teal-400">{labelOf(o.vehicle_category)}</span>
                     <span className="text-slate-500 text-[11px] ms-2 font-mono">{fmtTime(o.observation_timestamp, tz)}</span>
-                    {o.pending && !o.error && <span className="ms-2 inline-flex items-center gap-1 text-amber-300 text-[11px]"><CloudOff className="w-3 h-3" />{pick(lang, 'pending upload', 'در انتظار ارسال')}</span>}
+                    {!o.plate_suffix && <span className="ms-2 text-fuchsia-300 text-[11px]">{pick(lang, 'voice only - digits added later', 'فقط صدا - رقم‌ها بعداً')}</span>}{o.pending && !o.error && <span className="ms-2 inline-flex items-center gap-1 text-amber-300 text-[11px]"><CloudOff className="w-3 h-3" />{pick(lang, 'pending upload', 'در انتظار ارسال')}</span>}
                     {o.error && <p className="text-rose-300 text-[11px] truncate">{o.error}</p>}
                   </div>
                 </div>

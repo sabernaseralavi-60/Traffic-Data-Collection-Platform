@@ -122,7 +122,8 @@ export const categoryPatchSchema = z.object({
 export const observationSchema = z.object({
   study_id: z.uuid(),
   point_code: pointCode.optional(),
-  plate_suffix: z.string().min(1).max(12),
+  plate_suffix: z.string().max(12).optional(), // may be left out when a voice clip is sent: the digits are added later
+  suffix_source: z.enum(['TYPED', 'VOICE']).optional(),
   vehicle_category: z.string().trim().toUpperCase().max(24).optional(),
   vehicle_color: z.string().trim().max(20).optional(),
   observed_at: isoInstant.optional(),
@@ -132,7 +133,8 @@ export const observationSchema = z.object({
   audio_mime: z.string().max(60).optional(),
   audio_ms: z.number().int().min(0).max(30_000).optional(),
 });
-export const correctSchema = z.object({ plate_suffix: z.string().min(1).max(12), reason: z.string().trim().max(200).optional() });
+export const correctSchema = z.object({ plate_suffix: z.string().min(1).max(12), reason: z.string().trim().max(200).optional(), source: z.enum(['SUPERVISOR', 'SUGGESTION']).default('SUPERVISOR') });
+export const suggestionSchema = z.object({ suffix: z.string().regex(/^[0-9]{3}$/), source: z.string().trim().min(1).max(60), confidence: z.number().min(0).max(1).optional() });
 export const batchSchema = z.object({ observations: z.array(observationSchema).min(1).max(500) });
 export const voidSchema = z.object({ reason: z.string().trim().max(200).optional() });
 

@@ -17,11 +17,12 @@ Errors: `{ "error": "...", "code": "..." }` (validation errors add `issues: [{pa
 | `GET /studies/:id/maps/:mapId/image` | visible | the map image as binary (never inlined in JSON; sandboxing CSP header) |
 | `PUT /studies/:id/points` | A | points + route distances (points in use cannot be removed or change type) |
 | `PUT /studies/:id/assignments` | A | observer -> point (+ optional period) |
-| `POST /observations` | O | record one observation (point/observer from assignment); optional `audio_b64`, `audio_mime`, `audio_ms` (clip <= 200 KB decoded; a bad or oversized clip is dropped, the sighting is kept) |
+| `POST /observations` | O | record one observation (point/observer from assignment); `plate_suffix` may be **omitted when a valid voice clip is sent** (voice-only passage, digits added later; `empty_passage` otherwise); optional `audio_b64`, `audio_mime`, `audio_ms` (clip <= 200 KB decoded; a bad or oversized clip is dropped, the sighting is kept) |
 | `POST /observations/batch-sync` | O | up to 500; response lists every item: `created`, `duplicate` or `rejected` + reason |
 | `GET /studies/:id/observations` | visible (observer: own) | non-voided observations |
 | `GET /observations/:id/audio` | A, S, O (own) | the voice clip of a passage (`audio/webm`, `ogg`, `mp4`, `mpeg` or `wav`) |
-| `POST /observations/:id/correct` | A, S | `{plate_suffix, reason}`: voids the entry and creates a new one with the same time, point, observer and clip |
+| `POST /observations/:id/correct` | A, S | `{plate_suffix, reason, source: SUPERVISOR\|SUGGESTION}`: for a typed passage voids it and creates a new one with the same time, point, observer and clip; for a voice-only passage it adds the digits **in place** |
+| `POST /observations/:id/suggestion` | A, S | `{suffix, source, confidence}` stored by the offline tool `tools/transcribe_clips.py`; changes nothing until accepted via `correct` |
 | `POST /observations/:id/void` | O own within 10 min, A/S any | soft delete (event kept, who/when/why stored) |
 | `POST /studies/:id/match` | A, S | engine report: summary, matches, ambiguous, unmatched, OD, travel-time stats, route speeds, counts. Body: travel-time window, `strict_category_match`, `interval_minutes`, `filters {from,to,categories,points}` |
 | `POST /studies/:id/reviews` | A, S | `{entry_observation_id, exit_observation_id, decision: REVIEWED\|REJECTED\|CLEAR, note}` |

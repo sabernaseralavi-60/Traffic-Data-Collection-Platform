@@ -1,6 +1,6 @@
 /** Short voice clip of one passage, recorded in the browser (MediaRecorder). Never sent to any AI service. */
 
-export interface Clip { blob: Blob; mime: string; ms: number }
+export interface Clip { blob: Blob; mime: string; ms: number; startedAt: number }
 
 export const MAX_CLIP_MS = 6000;
 const TYPES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
@@ -27,7 +27,7 @@ export async function startClip(onAutoStop?: (c: Clip | null) => void): Promise<
         release();
         const mime = (rec.mimeType || type || 'audio/webm').split(';')[0];
         const blob = new Blob(chunks, { type: mime });
-        resolve(blob.size > 200 && blob.size <= 190_000 ? { blob, mime, ms: Math.min(Date.now() - started, 30_000) } : null);
+        resolve(blob.size > 200 && blob.size <= 190_000 ? { blob, mime, ms: Math.min(Date.now() - started, 30_000), startedAt: started } : null);
       };
       if (rec.state !== 'inactive') rec.stop(); else rec.onstop?.(new Event('stop'));
     });

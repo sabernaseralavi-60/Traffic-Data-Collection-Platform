@@ -155,6 +155,29 @@ class TestScore(unittest.TestCase):
         self.assertGreater(mid, edge)
 
 
+class TestVoiceOnly(unittest.TestCase):
+    """A passage recorded by voice alone has no digits yet: it is counted, never matched, and never breaks the pipeline."""
+
+    def test_pending_voice_is_counted_but_not_matched(self):
+        rep = build_report({"observations": [
+            {"id": "e1", "study_id": "s", "point_code": "E01", "point_type": "ENTRY", "plate_suffix": "387", "observation_timestamp": "2026-10-30T08:15:10Z"},
+            {"id": "x1", "study_id": "s", "point_code": "X01", "point_type": "EXIT", "plate_suffix": "387", "observation_timestamp": "2026-10-30T08:19:20Z"},
+            {"id": "v1", "study_id": "s", "point_code": "E01", "point_type": "ENTRY", "plate_suffix": None, "observation_timestamp": "2026-10-30T08:16:00Z"},
+            {"id": "v2", "study_id": "s", "point_code": "X01", "point_type": "EXIT", "plate_suffix": "", "observation_timestamp": "2026-10-30T08:20:00Z"},
+        ]})
+        s = rep["summary"]
+        self.assertEqual((s["matched_journeys"], s["total_entries"], s["total_exits"]), (1, 1, 1))  # matching rate is over entries WITH digits
+        self.assertEqual((s["pending_voice_entries"], s["pending_voice_exits"], s["total_observations"]), (1, 1, 4))
+        self.assertEqual(rep["analytics"]["counts"]["total"], 4)  # traffic volume counts every passage, voice-only ones included...
+        self.assertEqual((s["unmatched_entries"], s["unmatched_exits"]), (0, 0))  # ...and pending ones are not "unmatched"
+
+    def test_all_voice_only_study(self):
+        rep = build_report({"observations": [
+            {"id": "v1", "study_id": "s", "point_code": "E01", "point_type": "ENTRY", "plate_suffix": None, "observation_timestamp": "2026-10-30T08:16:00Z"}]})
+        self.assertEqual(rep["summary"]["matched_journeys"], 0)
+        self.assertEqual(rep["summary"]["pending_voice_entries"], 1)
+
+
 class TestTimestamps(unittest.TestCase):
     def test_naive_timestamp_is_utc_regardless_of_server_timezone(self):
         code = "from backend.trafficlab_engine import parse_iso_or_epoch as p;print(p('2026-10-30T08:15:10'))"

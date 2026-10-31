@@ -1,0 +1,3 @@
+# Only for tools/transcribe_clips.py (offline digit extraction from voice clips). Not needed by the web app or its server.
+vosk>=0.3.45
+av>=12
