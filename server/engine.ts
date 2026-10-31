@@ -12,7 +12,26 @@ export class EngineError extends Error {
   }
 }
 
-interface EngineOpts { pythonBin: string; timeoutMs: number; maxParallel?: number }
+export interface EngineOpts { pythonBin: string; timeoutMs: number; maxParallel?: number; url?: string | null; token?: string | null }
+
+export const engineOptions = (cfg: { pythonBin: string; engineTimeoutMs: number; engineUrl: string | null; engineToken: string | null }, timeoutMs = cfg.engineTimeoutMs): EngineOpts =>
+  ({ pythonBin: cfg.pythonBin, timeoutMs, url: cfg.engineUrl, token: cfg.engineToken });
+
+/** Same JSON contract over HTTP (used where the Node process cannot start Python, e.g. Vercel). */
+async function runEngineHttp<T>(action: string, payload: unknown, opts: EngineOpts): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(opts.url!, { method: 'POST', headers: { 'content-type': 'application/json', 'x-engine-token': opts.token ?? '' }, body: JSON.stringify({ action, payload }), signal: AbortSignal.timeout(opts.timeoutMs) });
+  } catch (e: any) {
+    throw new EngineError(`engine request failed: ${e?.name === 'TimeoutError' ? 'timeout' : e?.message}`, e?.name === 'TimeoutError' ? 'timeout' : 'unavailable');
+  }
+  const text = await res.text();
+  let body: any = null;
+  try { body = JSON.parse(text); } catch { /* not JSON */ }
+  if (res.ok && body) return body as T;
+  if (res.status === 422) throw new EngineError(body?.error ?? 'invalid input', 'invalid');
+  throw new EngineError(`engine HTTP ${res.status}`, res.status === 401 || res.status === 403 ? 'unavailable' : 'failed');
+}
 
 let running = 0;
 const waiting: Array<() => void> = [];
@@ -28,6 +47,7 @@ function release() {
 
 /** Runs the Python analytical engine: JSON on stdin, JSON on stdout. Bounded time, bounded parallelism. */
 export async function runEngine<T = any>(action: 'report' | 'export_csv', payload: unknown, opts: EngineOpts): Promise<T> {
+  if (opts.url) return runEngineHttp<T>(action, payload, opts);
   await slot(opts.maxParallel ?? 2);
   try {
     return await new Promise<T>((resolve, reject) => {

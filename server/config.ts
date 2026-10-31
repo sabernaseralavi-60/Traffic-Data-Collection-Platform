@@ -8,6 +8,8 @@ export interface Config {
   sessionSecret: string;
   sessionHours: number;
   pythonBin: string;
+  engineUrl: string | null;
+  engineToken: string | null;
   engineTimeoutMs: number;
   adminUsername: string;
   adminPassword: string | null;
@@ -36,6 +38,9 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     sessionSecret,
     sessionHours: Number(e.SESSION_HOURS) || 12,
     pythonBin: e.PYTHON_BIN || (process.platform === 'win32' ? 'python' : 'python3'),
+    // serverless hosts cannot spawn Python: the engine then runs as a separate HTTP function (see api/engine.py)
+    engineUrl: e.ENGINE_URL || (e.VERCEL_PROJECT_PRODUCTION_URL && e.ENGINE_TOKEN ? `https://${e.VERCEL_PROJECT_PRODUCTION_URL}/api/engine` : null),
+    engineToken: e.ENGINE_TOKEN || null,
     engineTimeoutMs: Number(e.ENGINE_TIMEOUT_MS) || 30_000,
     adminUsername: (e.ADMIN_USERNAME || 'admin').toLowerCase(),
     adminPassword: e.ADMIN_PASSWORD || null,

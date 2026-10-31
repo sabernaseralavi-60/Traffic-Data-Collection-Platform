@@ -6,7 +6,7 @@ import { normalizePlateDigits } from '../src/utils/plateNormalization.ts';
 import { COOKIE, csrfHeader, hashPassword, requireAuth, requireRole, sessionLoader, setSessionCookie, signSession, verifyPassword, type AuthUser } from './auth.ts';
 import type { Config } from './config.ts';
 import { ts, type Db, type Query } from './db.ts';
-import { EngineError, runEngine } from './engine.ts';
+import { EngineError, engineOptions, runEngine } from './engine.ts';
 import { resetDemoObservations } from './seed.ts';
 import {
   assignmentsSchema, batchSchema, categoryCreateSchema, categoryPatchSchema, loginSchema, matchSchema, observationSchema, pointsSchema,
@@ -113,7 +113,7 @@ export function createApp(cfg: Config, db: Db) {
     let dbOk = false;
     try { await q('SELECT 1'); dbOk = true; } catch { /* reported below */ }
     let engine: 'ok' | 'unavailable' = 'ok';
-    try { await runEngine('report', { observations: [] }, { pythonBin: cfg.pythonBin, timeoutMs: 5000 }); } catch { engine = 'unavailable'; }
+    try { await runEngine('report', { observations: [] }, engineOptions(cfg, 8000)); } catch { engine = 'unavailable'; }
     res.status(dbOk && engine === 'ok' ? 200 : 503).json({ ok: dbOk && engine === 'ok', database: dbOk ? db.kind : 'down', engine });
   }));
 
@@ -436,7 +436,7 @@ export function createApp(cfg: Config, db: Db) {
     const routes = await q(`SELECT origin_code, destination_code, distance_meters::float8 AS d FROM route_distances WHERE study_id = $1`, [studyId]);
     return { observations, reviews, route_distances: Object.fromEntries(routes.map((r) => [`${r.origin_code}->${r.destination_code}`, r.d])), ...params };
   }
-  const engineOpts = { pythonBin: cfg.pythonBin, timeoutMs: cfg.engineTimeoutMs };
+  const engineOpts = engineOptions(cfg);
   async function buildReport(studyId: string, params: MatchParams) {
     const payload = await enginePayload(studyId, params);
     return { report: await runEngine('report', payload, engineOpts), observations: payload.observations };
