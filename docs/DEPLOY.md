@@ -1,8 +1,16 @@
 # Deployment
 
-The app is one long-running Node process that also launches Python for the analysis, so it needs a **container host**
-(Cloud Run, Render, Fly.io, Railway, a VPS) rather than Vercel serverless functions. Check each host's current free tier
-and limits before choosing; none is assumed here.
+Two supported shapes, same code:
+
+1. **Vercel + Neon (what runs the pilot).** `api/index.ts` hosts the Express app as one Node function, `api/engine.py` hosts the
+   Python engine as a Python function (the Node function calls it over HTTPS with a secret `ENGINE_TOKEN`), the Vite build is
+   served statically. Configuration: [vercel.json](../vercel.json). Environment (Production): `SESSION_SECRET`, `ENGINE_TOKEN`,
+   `ADMIN_PASSWORD`, optional `SEED_DEMO`/`SEED_PASSWORD`, and the Neon variables (`DATABASE_URL`/`POSTGRES_URL`, added by
+   `vercel integration add neon`). The engine URL is derived from `VERCEL_PROJECT_PRODUCTION_URL`. Limits to remember: request body
+   4.5 MB (about 10-15 thousand observations per matching call), function time 30 s as configured, rate limiter is per instance
+   (the account lockout is in the database and holds across instances), no timers (retention runs on each cold start).
+2. **Container host** (Cloud Run, Render, Fly.io, Railway, a VPS) with the Dockerfile: one long-running process that spawns
+   Python. Check each host's current free tier and limits before choosing.
 
 ## Environment
 See [.env.example](../.env.example). Minimum for production:

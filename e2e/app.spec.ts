@@ -16,6 +16,7 @@ async function login(page: Page, username: string, password: string) {
 /** The shared server may hold studies created by other tests: always work on the DEMO study explicitly. */
 async function useDemoStudy(page: Page) {
   const sel = page.getByLabel('Active study');
+  await sel.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {}); // the list loads after login; absent when only one study exists
   if (await sel.count()) {
     const v = await sel.locator('option', { hasText: 'DEMO' }).first().getAttribute('value');
     await sel.selectOption(v!);

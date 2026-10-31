@@ -32,6 +32,10 @@ and can be reset by the administrator.
 | `npm test` | API/unit tests (Vitest, in-memory Postgres) + Python engine tests |
 | `npm run e2e` | browser tests (Playwright, mobile + desktop; needs `npm run build` first) |
 
+## Live instance (pilot)
+https://trafficlab-ten.vercel.app - Vercel (Node API function + Python engine function + static UI) with a Neon PostgreSQL
+database. It contains a labelled **DEMO** study; accounts are given to testers by the administrator.
+
 ## Production
 
 Set `SESSION_SECRET`, `ADMIN_PASSWORD` and (recommended) `DATABASE_URL` - see [.env.example](.env.example) and
