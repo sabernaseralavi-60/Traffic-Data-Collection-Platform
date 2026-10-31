@@ -184,6 +184,7 @@ test.describe('supervisor and administrator', () => {
 
     // the new person can sign in and sees exactly their own point
     await page.getByTestId('logout').click();
+    await expect(page.getByTestId('login-form')).toBeVisible(); // wait until the sign-out request has finished before navigating
     await login(page, `exit.${tag}`.slice(0, 32), 'Observer-pass-1');
     await expect(page.getByTestId('station-code')).toHaveText('X01');
   });
@@ -202,6 +203,7 @@ test.describe('supervisor and administrator', () => {
     await expect(page.getByTestId('notice')).toContainText('888');
     await expect(page.getByTestId('clip-row')).toHaveCount(0);       // the clip travelled with the passage
     await page.getByTestId('logout').click();
+    await expect(page.getByTestId('login-form')).toBeVisible(); // wait until the sign-out request has finished before navigating
 
     await login(page, 'supervisor', DEMO_PW);
     await useDemoStudy(page);

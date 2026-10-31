@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800">
+  <rect width="1200" height="800" fill="#e8efe6"/>
+  <g stroke="#cfd8cf" stroke-width="2"><path d="M0 200H1200M0 600H1200M300 0V800M900 0V800"/></g>
+  <!-- main roads -->
+  <rect x="0" y="340" width="1200" height="120" fill="#4b5563"/>
+  <rect x="540" y="0" width="120" height="800" fill="#4b5563"/>
+  <g stroke="#f8fafc" stroke-width="4" stroke-dasharray="28 22"><path d="M0 400H540M660 400H1200M600 0V340M600 460V800"/></g>
+  <!-- junction -->
+  <rect x="540" y="340" width="120" height="120" fill="#374151"/>
+  <!-- crosswalks -->
+  <g stroke="#f8fafc" stroke-width="10" stroke-dasharray="12 10"><path d="M520 345V455M680 345V455M545 320H655M545 480H655"/></g>
+  <g font-family="Arial, sans-serif" font-size="26" fill="#111827" font-weight="bold">
+    <text x="20" y="320">West arm</text><text x="1040" y="320">East arm</text>
+    <text x="620" y="40">North arm</text><text x="620" y="780">South arm</text>
+  </g>
+  <text x="20" y="780" font-family="Arial, sans-serif" font-size="22" fill="#374151">Sample map section 1 - four-arm junction (schematic, not to scale)</text>
+</svg>

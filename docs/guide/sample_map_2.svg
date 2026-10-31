@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800">
+  <rect width="1200" height="800" fill="#eef0e4"/>
+  <rect x="0" y="360" width="1200" height="110" fill="#4b5563"/>
+  <rect x="1090" y="0" width="110" height="800" fill="#4b5563" opacity="0"/>
+  <!-- roundabout -->
+  <circle cx="600" cy="415" r="170" fill="#4b5563"/>
+  <circle cx="600" cy="415" r="82" fill="#86a779"/>
+  <rect x="545" y="0" width="110" height="260" fill="#4b5563"/>
+  <rect x="545" y="570" width="110" height="230" fill="#4b5563"/>
+  <g stroke="#f8fafc" stroke-width="4" stroke-dasharray="26 20"><path d="M0 415H430M770 415H1200M600 0V245M600 585V800"/></g>
+  <g font-family="Arial, sans-serif" font-size="26" fill="#111827" font-weight="bold">
+    <text x="20" y="340">Ring road (west)</text><text x="960" y="340">Ring road (east)</text><text x="650" y="40">University avenue</text>
+  </g>
+  <text x="20" y="780" font-family="Arial, sans-serif" font-size="22" fill="#374151">Sample map section 2 - roundabout (schematic, not to scale)</text>
+</svg>

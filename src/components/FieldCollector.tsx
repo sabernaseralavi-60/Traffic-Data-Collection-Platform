@@ -229,7 +229,7 @@ export const FieldCollector: React.FC<Props> = ({ user, study, assignments, cate
           <div className="flex gap-2">
             <button type="button" onClick={() => void toggleVoice()} disabled={(!speechSupported && !audioOn) || !canRecord} title={speechSupported || audioOn ? '' : t.voice_unsupported} data-testid="voice-button"
               className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-xs font-bold border disabled:opacity-40 ${listening ? 'bg-rose-600 text-white border-rose-500 animate-pulse' : 'bg-slate-800 text-teal-300 border-teal-500/30'}`}>
-              {listening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}<span>{listening ? (audioOn ? pick(lang, 'Recording… say the digits, tap to stop', 'در حال ضبط… رقم‌ها را بگویید، برای پایان لمس کنید') : t.listening) : audioOn ? pick(lang, 'Say digits (records this passage)', 'گفتن رقم‌ها (ضبط صدای این تردد)') : t.voice_input}</span>
+              {listening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}<span>{listening ? (audioOn ? pick(lang, 'Recording… say the digits, tap to stop', 'در حال ضبط… رقم‌ها را بگویید، برای پایان لمس کنید') : t.listening) : audioOn ? pick(lang, 'Say digits (records this passage)', 'گفتن رقم‌ها (ضبط صدا)') : t.voice_input}</span>
             </button>
             <button type="submit" disabled={busy || plate.length !== 3 || !canRecord} data-testid="record-button"
               className={`flex-[2] flex items-center justify-center gap-2 py-3 px-5 rounded-xl font-bold text-sm ${plate.length === 3 && canRecord ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 active:scale-95' : 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed'}`}>

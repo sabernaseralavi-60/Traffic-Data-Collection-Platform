@@ -31,6 +31,7 @@ export const StudySetup: React.FC<Props> = ({ lang, study, onChanged }) => {
   const [newMapName, setNewMapName] = useState('');
   const [person, setPerson] = useState({ full_name: '', username: '', password: '', point: '' });
   const canvas = useRef<HTMLDivElement>(null);
+  const [ratios, setRatios] = useState<Record<string, number>>({}); // width/height of each map image: markers are % of the IMAGE, so the frame must have its shape
   const [form, setForm] = useState({ name: '', study_date: new Date().toISOString().slice(0, 10), start_time: '08:00', end_time: '12:00', timezone: 'Asia/Tehran', supervisor_name: '' });
   const tz = study?.timezone || 'Asia/Tehran';
 
@@ -197,8 +198,9 @@ export const StudySetup: React.FC<Props> = ({ lang, study, onChanged }) => {
               {activeMap && <label className="text-xs text-slate-400 flex items-center gap-2">{pick(lang, 'Section name', 'نام بخش')}
                 <input key={activeMap.id} defaultValue={activeMap.name} onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== activeMap.name) void run(async () => { await api('PATCH', `/studies/${study.id}/maps/${activeMap.id}`, { name: v }); await onChanged(study.id); }, pick(lang, 'Renamed', 'نام تغییر کرد')); }} className={`${inputCls} w-48`} /></label>}
 
-              <div ref={canvas} onPointerMove={move} onPointerUp={() => setDrag(null)} onPointerLeave={() => setDrag(null)} className="relative w-full h-96 bg-slate-950 rounded-2xl border-2 border-slate-800 overflow-hidden touch-none select-none" data-testid="map-canvas">
-                {activeMap?.image_url ? <img src={activeMap.image_url} alt={activeMap.name} className="absolute inset-0 w-full h-full object-contain pointer-events-none bg-white/5" /> : (
+              <div ref={canvas} onPointerMove={move} onPointerUp={() => setDrag(null)} onPointerLeave={() => setDrag(null)} className="relative mx-auto bg-slate-950 rounded-2xl border-2 border-slate-800 overflow-hidden touch-none select-none" data-testid="map-canvas"
+                style={(() => { const r = activeMap?.image_url ? ratios[activeMap.id] ?? 16 / 9 : 16 / 9; return { aspectRatio: String(r), width: `min(100%, ${Math.round(70 * r)}vh)` }; })()}>
+                {activeMap?.image_url ? <img src={activeMap.image_url} alt={activeMap.name} onLoad={(e) => { const i = e.currentTarget; if (i.naturalWidth && i.naturalHeight) setRatios((r) => ({ ...r, [activeMap.id]: i.naturalWidth / i.naturalHeight })); }} className="absolute inset-0 w-full h-full object-fill pointer-events-none" /> : (
                   <svg className="absolute inset-0 w-full h-full pointer-events-none opacity-40" aria-hidden>
                     <defs><pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse"><path d="M 30 0 L 0 0 0 30" fill="none" stroke="#1e293b" strokeWidth="1" /></pattern></defs>
                     <rect width="100%" height="100%" fill="url(#grid)" />
@@ -207,7 +209,7 @@ export const StudySetup: React.FC<Props> = ({ lang, study, onChanged }) => {
                 )}
                 {points.filter((p) => onMap(p, activeMap?.id ?? null)).map((p) => (
                   <button key={p.code} type="button" onPointerDown={(e) => { (e.target as HTMLElement).setPointerCapture?.(e.pointerId); setDrag(p.code); }} aria-label={`${p.code} ${p.point_type}`} data-testid={`marker-${p.code}`}
-                    style={{ left: `${p.x_percent}%`, top: `${p.y_percent}%` }} className="absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center cursor-grab active:cursor-grabbing">
+                    style={{ left: `${p.x_percent}%`, top: `${p.y_percent}%` }} className="absolute -translate-x-1/2 -translate-y-[12px] flex flex-col items-center cursor-grab active:cursor-grabbing">
                     <span className={`w-6 h-6 border-2 border-white shadow-lg ${p.point_type === 'ENTRY' ? 'rounded-full bg-emerald-500' : 'rotate-45 bg-indigo-500'}`} />
                     <span className="mt-1 text-[10px] font-mono font-black bg-slate-900/90 px-1.5 rounded text-white whitespace-nowrap">{p.code}{peopleOf(p.code)[0] ? ` · ${nameOf(peopleOf(p.code)[0].r.user_id)?.full_name.split(' ')[0] ?? ''}` : ''}</span>
                   </button>
