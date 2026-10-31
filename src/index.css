@@ -1,9 +1,9 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
-  --font-vazir: "Vazirmatn", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", monospace;
+  --font-sans: "Vazirmatn Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-vazir: "Vazirmatn Variable", system-ui, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
 }
 
 :root {

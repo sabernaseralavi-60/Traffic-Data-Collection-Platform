@@ -23,3 +23,11 @@ __pycache__/
 
 # local runtime data
 .env.local
+
+# e2e artifacts
+e2e/screenshots/
+test-results/
+playwright-report/
+
+# personal photo: add it manually, only with the person's consent
+public/assets/akram_mazaheri.png

@@ -123,7 +123,7 @@ export const KermanManualView: React.FC<KermanManualViewProps> = ({ lang }) => {
           <div className="flex flex-wrap items-center justify-between text-xs text-slate-600 bg-slate-50 p-3 rounded-xl border border-slate-200 font-mono">
             <span><strong>شماره سند:</strong> KM-TRF-STD-2026-01</span>
             <span><strong>کد طرح:</strong> پایش دروازه‌ای محدوده مرکزی و شریان‌های شهر کرمان</span>
-            <span><strong>نسخه:</strong> ۲.۶ (سازگار با استاندارد FHWA TMG 2022)</span>
+            <span><strong>نسخه:</strong> ۰.۲ (روش‌شناسی با الهام از راهنمای FHWA TMG؛ این سند گواهی انطباق با آن استاندارد نیست)</span>
           </div>
         </div>
 
@@ -139,7 +139,9 @@ export const KermanManualView: React.FC<KermanManualViewProps> = ({ lang }) => {
                   src="/assets/akram_mazaheri.png"
                   alt="سرکار خانم دکتر اکرم مظاهری - طراح و برنامه‌ریز ارشد سامانه"
                   className="w-full h-full object-cover"
+                  onError={(e) => { e.currentTarget.style.display = 'none'; }}
                 />
+                <span className="absolute inset-0 -z-0 flex items-center justify-center text-4xl font-black text-amber-300/70" aria-hidden>ا.م</span>
               </div>
               <div className="absolute -bottom-2 -right-2 px-2.5 py-0.5 rounded-full bg-amber-500 text-slate-950 text-[10px] font-black shadow-md flex items-center gap-1">
                 <Award className="w-3 h-3" />
@@ -249,7 +251,7 @@ export const KermanManualView: React.FC<KermanManualViewProps> = ({ lang }) => {
                 <span>۴. موتور محاسباتی تحلیلی مستقل در پایتون (Python 3.10 Engine)</span>
               </div>
               <p className="text-justify text-[11px]">
-                تمام محاسبات مهندسی حمل و نقل، انطباق مکانی-زمانی پلاک‌های ناقص (Partial License Plate Matching)، ساخت ماتریس مبدا-مقصد، و برازش صدک‌های آماری ($P_{15}, P_{50}, P_{85}, P_{95}$) در هسته مستقل پایتون اجرا می‌شوند تا صحت نتایج مطابق موازین راهنمای پایش ترافیک آمریکا (FHWA TMG) باشد.
+                تمام محاسبات مهندسی حمل و نقل، انطباق مکانی-زمانی پلاک‌های ناقص (Partial License Plate Matching)، ساخت ماتریس مبدا-مقصد، و برازش صدک‌های آماری ($P_{15}, P_{50}, P_{85}, P_{95}$) در هسته مستقل پایتون اجرا می‌شوند و نتایج به‌صورت «سفرهای محتمل» گزارش می‌شوند؛ تطبیق ۳ رقم پلاک قطعی نیست.
               </p>
             </div>
           </div>
@@ -394,7 +396,7 @@ export const KermanManualView: React.FC<KermanManualViewProps> = ({ lang }) => {
               فصل چهارم: فرمول‌های مهندسی ترافیک و معیارهای کیفیت داده
             </h3>
             <p className="text-xs text-slate-500 mt-0.5">
-              مبانی ریاضی مورد تایید سرکار خانم دکتر اکرم مظاهری مطابق اصول FHWA TMG
+              مبانی ریاضی روش (نیازمند بازبینی و تأیید علمی طراح سامانه، مرجع کلی: FHWA TMG)
             </p>
           </div>
 

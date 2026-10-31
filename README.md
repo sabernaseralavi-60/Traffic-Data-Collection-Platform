@@ -1,20 +1,53 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# TrafficLab - Traffic Data Collection Platform
 
-# Run and deploy your AI Studio app
+Field data collection for transportation studies: observers record the last three digits of passing vehicles at
+**entry** and **exit** points of a study area (works offline), a Python engine matches them into *probable journeys*,
+and supervisors get an origin-destination matrix, travel times, average journey speeds, counts and exports
+(Excel, CSV, printable PDF report). Persian (RTL) and English. AI is never required.
 
-This contains everything you need to run your app locally.
+> Three-digit plate suffixes are **not unique identifiers**. Results are probable journeys; ambiguous cases are never
+> forced and need supervisor review. The "match score" is a heuristic ranking, not a probability.
 
-View your app in AI Studio: https://ai.studio/apps/32999177-5d4b-4c4b-9c6a-44f36bc72108
+## Quick start (local)
 
-## Run Locally
+Requirements: Node.js 22+, Python 3.10+.
 
-**Prerequisites:**  Node.js
+```bash
+npm install
+cp .env.example .env        # optional in development
+npm run dev                 # http://localhost:3000
+```
 
+On first start in development an embedded database is created in `data/` with a synthetic **DEMO** study and accounts
+`admin`, `supervisor`, `observer01..04` (password `demo-1234`, or `SEED_PASSWORD`). Demo data is clearly labelled
+and can be reset by the administrator.
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Scripts
+
+| Command | What it does |
+|---|---|
+| `npm run dev` | server + Vite dev middleware |
+| `npm run build` / `npm start` | production build (`dist/`) and server (`dist/server.mjs`) |
+| `npm run lint` | TypeScript check |
+| `npm test` | API/unit tests (Vitest, in-memory Postgres) + Python engine tests |
+| `npm run e2e` | browser tests (Playwright, mobile + desktop; needs `npm run build` first) |
+
+## Production
+
+Set `SESSION_SECRET`, `ADMIN_PASSWORD` and (recommended) `DATABASE_URL` - see [.env.example](.env.example) and
+[docs/DEPLOY.md](docs/DEPLOY.md). A [Dockerfile](Dockerfile) packages Node and the Python engine together.
+
+## Documentation
+
+[Architecture](docs/ARCHITECTURE.md) · [API](docs/API_SPECIFICATION.md) · [Database](docs/DATABASE_SCHEMA.md) ·
+[User guide](docs/USER_GUIDE.md) · [Deployment](docs/DEPLOY.md) · [Roadmap and status](docs/IMPLEMENTATION_ROADMAP.md)
+
+## Layout
+
+```
+server.ts            entry (dev: Vite middleware; prod: static files)
+server/              Express app: auth, RBAC, validation, SQL, engine bridge, exports, migrations
+backend/             Python engine (matching, OD, statistics, CSV) + tests
+src/                 React UI (no business logic: it displays what the server and engine return)
+e2e/                 Playwright browser tests
+```

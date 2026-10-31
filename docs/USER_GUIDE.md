@@ -1,75 +1,25 @@
-# TrafficLab User Guide & Operational Manual
-**Project:** TrafficLab – Smart Traffic Data Collection Platform  
-**Document ID:** UG-2026-001  
-**App Version:** v2.6 Cordon Pro  
+# User guide
 
----
+## Field observer
+1. Sign in with the account your administrator created. You see **your assigned point** (e.g. `E01 - ENTRY`) at the top; if you have none, recording is disabled so nothing is saved at the wrong place.
+2. When a vehicle passes: tap its **last 3 digits** on the keypad (or type; Persian digits work; or use the voice button, which only fills the field - check it, then record). Exactly three digits are required; keep leading zeros (`042`).
+3. Optionally tap the vehicle category (never required; it is remembered as your default).
+4. Press **Record**. A green message confirms it. The same suffix twice is allowed (two vehicles can share a suffix); a short warning appears if the same number was entered seconds ago.
+5. Wrong entry? Use the trash icon beside it within 10 minutes (supervisors can undo any entry). The entry is marked undone, not erased.
+6. **No internet?** Keep recording. Entries are stored on the phone with their real time and the badge shows how many are waiting. They upload automatically when the connection returns. If the server refuses an item (for example, the study was closed) it stays on the list in red with the reason - tell your supervisor.
+7. Tips: keep the phone charged, keep the screen on, use the keypad at peak hours.
 
-## 1. Overview
+## Supervisor
+* **Dashboard** - totals, entries/exits, matched, match rate, ambiguous, unmatched, mean travel time, volume per interval, category and point distributions.
+* **Vehicle matching** - set the feasible travel-time window, optional time range and categories, run. Matches are *probable* journeys. For each **ambiguous** case (same suffix, several possible partners) compare candidates and **Confirm** one or **Reject** a pair; decisions are stored and kept on every re-run.
+* **OD matrix and travel time** - counts or shares, travel-time statistics and percentiles, average journey speed per route (only where the route distance is configured).
+* **Reports** - Excel, CSV, and a printable report (browser *Print / Save as PDF*).
 
-TrafficLab is a modular web platform engineered for transportation engineering field studies. It facilitates high-speed manual recording of passing vehicles at cordon observation gates using 3-digit registration plate suffixes, supports offline queuing during intermittent mobile network coverage, and runs a backend Python 3.10 matching engine to generate Origin–Destination (OD) trip matrices and travel time statistics compliant with FHWA Traffic Monitoring Guide (TMG 2022) guidelines.
+## Administrator
+* **Accounts and categories** - create observers/supervisors, deactivate, reset a password, edit the vehicle category list.
+* **Studies and map** - create a study (DRAFT), upload a schematic map (PNG/JPG/SVG up to 1 MB) or use the grid, add ENTRY/EXIT points and drag them into place, enter route distances, assign observers to points (optional time period), then set the study **ACTIVE**. Set it **COMPLETED** to stop recording. Points that already have observations cannot be removed.
+* Optional **retention**: observations are deleted automatically that many days after the study date.
+* The DEMO study (if present) holds synthetic data and can be reset from the dashboard.
 
----
-
-## 2. Administrator & Supervisor Manual
-
-### 2.1 Study Area Setup
-1. **Access Study Area Map:**
-   - Navigate to the **Study Area Map** tab.
-   - The schematic canvas represents the cordon network with arterial corridors and intersection roundabout.
-2. **Configure Observation Gates:**
-   - **Entry Gates (Green Badge):** Inbound observation points (e.g., `E01`, `E02`).
-   - **Exit Gates (Indigo Badge):** Outbound observation points (e.g., `X01`, `X02`).
-   - Click any node to adjust its schematic $(X\%, Y\%)$ position or add new points using the sidebar form.
-3. **Route Distance Matrix:**
-   - Specify the travel distance in meters for each Origin $\rightarrow$ Destination pair (e.g., $E01 \rightarrow X01: 2,500\text{ m}$).
-   - These distances are used by the Python engine to compute average journey speeds:
-     $$v = \frac{d}{\Delta t} \times 3.6 \quad [\text{km/h}]$$
-4. **Click "Save Configuration":**
-   - Persists all nodes and route distances to the backend.
-
-### 2.2 Observer Roster & Gate Assignments
-1. Navigate to **Observers**.
-2. View all observer accounts and their active gate assignment (e.g., Ali Rezaei $\rightarrow$ `E01`, Maryam Moradi $\rightarrow$ `X01`).
-3. Observers will automatically have their input screen locked to their assigned gate to prevent accidental cross-station data pollution.
-
-### 2.3 Running the Vehicle Matching Engine
-1. Navigate to **Vehicle Matching**.
-2. Adjust algorithm parameters:
-   - **Min Travel Time ($T_{\min}$):** Default 30s. Rejects physically impossible trips faster than free-flow speed.
-   - **Max Travel Time ($T_{\max}$):** Default 900s (15 min). Excludes long-duration parking/stops.
-   - **Strict Category Match:** When enabled, rejects candidate pairs with conflicting vehicle classes.
-3. Click **Execute Matching Engine**:
-   - Executes `backend/trafficlab_engine.py match` on the backend.
-   - Outputs matching rate, mean travel time, and journey list.
-
-### 2.4 Ambiguous Candidate Resolution
-- When two different vehicles with the same 3-digit suffix enter or exit within the same time window, the system flags the journey as **AMBIGUOUS**.
-- The candidate inspector presents all plausible pairs with travel times, estimated speeds, and confidence scores.
-- The supervisor clicks **Confirm Match** on the verified candidate, or leaves them as separate unmatched sightings.
-
-### 2.5 Exporting Reports
-1. **CSV Export:** Click **Export CSV** to download validated journey records and OD tables.
-2. **Excel Format:** Click **Export Excel (TSV/CSV)** in the OD Matrix view.
-3. **Printable Formal Study Report:** Navigate to **Reports & Export** and click **Print / Save PDF** for an official FHWA-styled study document.
-
----
-
-## 3. Field Observer Manual
-
-### 3.1 Field Collection Workflow (1–2 Second Entry)
-1. Open the application on any smartphone or tablet browser.
-2. The top banner prominently displays your **Assigned Gate** (e.g., `E01 - Northern Arterial Inbound [ENTRY GATE]`).
-3. As a vehicle passes:
-   - **Method A (Rapid Numpad):** Tap the 3 digits on the large numpad (e.g., `3`, `8`, `7`).
-   - **Method B (Physical Keyboard):** Type `387` and press `Enter`.
-   - **Method C (Persian Voice Input):** Tap **ورودی صوتی فارسی (Persian Voice Input)** and say the digits in Persian (e.g., *"سه هشت هفت"*). The system parses Persian digit words and inserts `387`.
-4. (Optional) Tap a vehicle category: **Car**, **Taxi**, **Pickup**, **Motorcycle**, **Van**, **Bus**, or **Heavy Truck** (defaults to Passenger Car).
-5. Tap **Record Vehicle (Enter)**.
-6. Haptic and visual confirmation appears in $<1$ second and clears the field for the next vehicle.
-
-### 3.2 Offline Mode & Intermittent Connectivity
-1. If cell reception drops, the status indicator automatically switches to **Offline (آفلاین)**.
-2. The observer can continue recording vehicles uninterrupted. Observations are safely buffered into browser IndexedDB with exact capture timestamps.
-3. The queue counter displays pending records (e.g., `5 Pending Sync`).
-4. When internet returns, the system automatically flushes queued records to the server, or the observer can tap **Sync Now**.
+## Good practice for field surveys
+Stand with a clear view of the rear plates, cover each lane group, synchronise phone clocks (automatic network time), record every vehicle or a stated sample, and record the study conditions (weather, incidents) in the study description. Always report matching results as *probable* journeys with the ambiguous and unmatched counts next to them.

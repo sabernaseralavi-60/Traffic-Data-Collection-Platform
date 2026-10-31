@@ -1,79 +1,46 @@
-# System Architecture Document
-**Project:** TrafficLab – Smart Traffic Data Collection Platform  
-**Document ID:** ARCH-2026-001  
-**Architecture:** Modular Full-Stack Web Platform (React/TypeScript + Python Engine + SQLite/PostgreSQL Ready)  
+# Architecture
 
----
+## Decision record
+The specification recommended Next.js + FastAPI + Neon + Vercel. The first build (Google AI Studio) delivered
+React + Vite + Express with a Python process for the calculations. The audit kept that stack because replacing it
+would not improve correctness and would delay delivery; the requirements that mattered were met inside it
+(Python for all engineering calculations, PostgreSQL, offline-first PWA, RBAC). Consequence: the Express server
+is long-running, so it is deployed on a **container host** (see DEPLOY.md), not on Vercel serverless functions.
 
-## 1. High-Level System Architecture
-
-TrafficLab is designed with strict separation between the user-facing responsive collection client, the API gateway / persistence layer, and the analytical traffic engineering engine:
-
+## Components
 ```
-+-----------------------------------------------------------------------------------+
-|                           CLIENT LAYER (PWA / Responsive Web)                    |
-|                                                                                   |
-|  +------------------------+  +--------------------------+  +-------------------+  |
-|  | Field Observer UI      |  | Admin & Supervisor Panel |  | Analytics & OD    |  |
-|  | - 1-2s Numpad / Speech |  | - Study & Schematic Map  |  | - Heatmap Matrix  |  |
-|  | - Offline IndexedDB    |  | - Observer Assignments   |  | - Travel Times    |  |
-|  | - fa-IR Voice Parser   |  | - Ambiguity Review       |  | - Excel/CSV Export|  |
-|  +------------------------+  +--------------------------+  +-------------------+  |
-+------------------------------------------^----------------------------------------+
-                                           | HTTPS / JSON API
-+------------------------------------------v----------------------------------------+
-|                      BACKEND GATEWAY & PERSISTENCE (Node/Express)                 |
-|                                                                                   |
-|  - Auth & RBAC (Admin, Supervisor, Observer)                                      |
-|  - Idempotency & Duplicate Observation Guard                                      |
-|  - Study Area Schematic & Point Topology Management                               |
-|  - Sync Queue Receiver with Transaction Isolation                                 |
-|  - Audit Log & Event Sourcing                                                     |
-+------------------------------------------^----------------------------------------+
-                                           | IPC / Direct Child Process Execution
-+------------------------------------------v----------------------------------------+
-|                     PYTHON TRAFFIC ENGINEERING ENGINE (Python 3.10)               |
-|                                                                                   |
-|  +--------------------------------+  +-----------------------------------------+  |
-|  | Partial Plate Matching Engine  |  | Transportation Analytics                |  |
-|  | - Temporal Feasibility Window |  | - OD Matrix Formulation                 |  |
-|  | - Category Compatibility       |  | - Interval Binning (5, 15, 30, 60 min)  |  |
-|  | - Ambiguity Detection          |  | - Travel Time Percentiles (15, 50, 85)  |  |
-|  | - Confidence Scoring           |  | - Average Speed Estimation (v = d/t)    |  |
-|  +--------------------------------+  +-----------------------------------------+  |
-+-----------------------------------------------------------------------------------+
+Browser (React, PWA, IndexedDB queue) --HTTPS/JSON--> Express (server/)
+                                                         |-- SQL --> PostgreSQL (DATABASE_URL) or embedded PGlite (DATA_DIR)
+                                                         '-- stdin/stdout JSON --> Python engine (backend/trafficlab_engine.py)
 ```
+* **UI (`src/`)** - interaction, presentation, form validation, local storage, API calls. No traffic calculations.
+* **Server (`server/`)** - authentication (scrypt password hashes, HMAC-signed HttpOnly session cookie, lockout),
+  role checks on every route, zod validation, SQL, audit log, retention job, CSV/XLSX export, engine bridge
+  (time-boxed, bounded parallelism, errors never leak internals).
+* **Engine (`backend/`)** - pure functions: matching, ambiguity detection, supervisor reviews, OD matrix, travel-time
+  statistics, route speeds, counts by point/category/interval, filters, CSV. Independent of the database.
+* **Database** - one SQL dialect, two drivers: `pg` for managed PostgreSQL, PGlite (embedded) for local/single-instance use.
+  Migrations are TypeScript modules in `server/migrations/`, applied in order inside transactions and recorded in
+  `schema_migrations`.
 
----
+## Security model
+* Roles: ADMIN (configuration, accounts), SUPERVISOR (matching, review, reports, voiding), OBSERVER (record at own point).
+* The observer, point and point type of every observation are derived on the server from the session and the
+  assignment; request bodies cannot override them.
+* State-changing requests require the `X-TL-CSRF: 1` header (cannot be sent cross-site without a CORS preflight, which is never granted) on top of `SameSite=Lax`.
+* Helmet headers and a strict CSP in production; login rate limit plus per-account lockout; request size limits.
+* No full plate numbers are collected; observations are never public; configurable retention per study.
 
-## 2. Component Design & Responsibilities
+## Time
+Instants are stored as `timestamptz` (UTC). Each study has a time zone (default `Asia/Tehran`); the UI and exports show
+local time in that zone. The engine reads zone-less timestamps as UTC (never the server's zone).
 
-### 2.1 Frontend Client (React 19 + TypeScript + Tailwind CSS)
-- **Role:** Fast, tactile data capture and clear visualization.
-- **Offline Reliability:** IndexedDB queue buffers observations when offline. Automatically flushes records when `navigator.onLine` fires, with automatic deduplication by `idempotency_key`.
-- **Speech Digit Normalization:** Browser Web Speech API (`fa-IR`) translates spoken Persian numerals ("سه هشت هفت") to standard normalized string format `"387"`, keeping leading zeros.
-- **Bilingual Internationalization:** Real-time switch between Persian (RTL, Vazirmatn font) and English (LTR, Plus Jakarta Sans).
+## Offline behaviour
+The service worker caches the static shell (never `/api`), so the app opens without a connection. Observations made
+offline are stored in IndexedDB with the **original** time and the recording user; on reconnection they are sent in
+batches with idempotency keys; the server answers per item (created / duplicate / rejected). Rejected items stay
+visible as errors on the device. Items of another account are never uploaded under the current session.
 
-### 2.2 Backend Gateway (Express.js)
-- Manages study configurations, observer accounts, authentication sessions, and observation ingestion.
-- Enforces role-based permissions:
-  - **Administrator:** Full study creation, node layout, observer account provisioning, global export.
-  - **Supervisor:** Study monitoring, candidate ambiguity resolution, match review.
-  - **Observer:** Restricted to currently assigned study and observation point.
-
-### 2.3 Python Engine (`backend/trafficlab_engine.py`)
-- Built exclusively with Python standard libraries (`json`, `math`, `statistics`, `datetime`, `dataclasses`, `typing`, `unittest`).
-- Zero external runtime failures; works in standard Python 3.10+ environments.
-- Implements:
-  - **Bipartite temporal matching:** Entry vs Exit timestamps within configurable $[T_{\min}, T_{\max}]$ window.
-  - **Tie-breaking & Ambiguity flagging:** Whenever a plate suffix has multiple plausible candidates within the time window, records are marked `AMBIGUOUS` with candidate IDs preserved for supervisor audit.
-  - **Transportation statistics:** Origin-Destination totals, row/column proportions, travel time parametric (mean, standard deviation) and non-parametric (median, 15th, 85th, 95th percentiles) metrics.
-  - **Speed calculations:** Uses route distance table to derive average journey speeds.
-
----
-
-## 3. Deployment & Cloud Constraints
-
-- **Free-Tier Compatibility:** Designed to run seamlessly on Vercel or Cloud Run / containerized environments.
-- **Database Scalability:** Normalized schema ready for Neon Serverless PostgreSQL or local SQLite/in-memory store for high-throughput testing.
-- **Zero AI Dependency:** Does not require external LLMs, speech cloud APIs, or proprietary services.
+## Extension points
+New survey types (turning movements, parking occupancy, ...) can add their own observation tables and engine
+actions beside the entry-exit module; the observation, assignment, audit and export code is reusable. Not implemented yet.

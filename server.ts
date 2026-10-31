@@ -7,7 +7,9 @@ import { loadConfig } from './server/config.ts';
 import { migrate, openDb } from './server/db.ts';
 import { bootstrap } from './server/seed.ts';
 
-const root = path.dirname(fileURLToPath(import.meta.url));
+const here = path.dirname(fileURLToPath(import.meta.url));
+// dev: this file is in the project root; production: the bundle is dist/server.mjs, one level below it
+const root = path.basename(here) === 'dist' ? path.dirname(here) : here;
 
 async function main() {
   const cfg = loadConfig();

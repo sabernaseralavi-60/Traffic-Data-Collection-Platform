@@ -26,8 +26,8 @@ export const translations = {
     collector_title: 'Field Data Collection',
     collector_subtitle: 'Fast 1–2s vehicle plate suffix registration',
     assigned_station: 'Assigned Station',
-    station_type_entry: 'ENTRY GATE',
-    station_type_exit: 'EXIT GATE',
+    station_type_entry: 'ENTRY',
+    station_type_exit: 'EXIT',
     plate_suffix_label: '3-Digit Plate Suffix',
     plate_suffix_placeholder: 'e.g. 387',
     voice_input: 'Persian Voice Input',
@@ -48,10 +48,10 @@ export const translations = {
     recent_records: 'Recent Observations at this Station',
     no_recent: 'No recent observations recorded yet.',
     duplicate_warning: 'Warning: Identical suffix recorded a few moments ago. Recorded as separate vehicle.',
-    undo_delete: 'Delete',
+    undo_delete: 'Undo',
     // Matching & Analytics
     matching_title: 'Vehicle Matching Engine',
-    matching_subtitle: 'Deterministic temporal matching with candidate ambiguity resolution (Python 3.10)',
+    matching_subtitle: 'Probable journeys from 3-digit plate suffixes and a feasible travel-time window; ambiguous cases need supervisor review',
     run_matching: 'Execute Matching Engine',
     matching_in_progress: 'Running matching algorithm...',
     min_travel_time: 'Min Travel Time (s)',
@@ -75,7 +75,7 @@ export const translations = {
     table_exit_time: 'Exit Time',
     table_travel_time: 'Travel Time',
     table_speed: 'Est. Speed',
-    table_confidence: 'Confidence',
+    table_confidence: 'Match score*',
     table_category: 'Category',
     table_status: 'Status',
     // OD Matrix
@@ -90,8 +90,8 @@ export const translations = {
     std_dev: 'Standard Deviation',
     modal_split: 'Vehicle Category Split',
     export_csv: 'Export CSV',
-    export_excel: 'Export Excel (TSV/CSV)',
-    reset_seed_data: 'Reset Seed Demo Data (Azadi Scenario)',
+    export_excel: 'Export Excel (.xlsx)',
+    reset_seed_data: 'Reset DEMO data (synthetic)',
     // Map
     map_title: 'Study Area Schematic Map & Network Layout',
     map_subtitle: 'Configure observation nodes (E01, X01...) and link route distances',
@@ -146,7 +146,7 @@ export const translations = {
     recent_records: 'آخرین رکوردهای ثبت‌شده در این ایستگاه',
     no_recent: 'هنوز هیچ رکوردی در این شیفت ثبت نشده است.',
     duplicate_warning: 'توجه: پلاک مشابهی چند لحظه پیش ثبت شده است. این رکورد به عنوان خودروی جدید ثبت شد.',
-    undo_delete: 'حذف',
+    undo_delete: 'لغو',
     // Matching & Analytics
     matching_title: 'موتور همترازسازی سفرهای ورودی و خروجی',
     matching_subtitle: 'انطباق مکانی-زمانی پلاک‌های ناقص با تشخیص موارد مبهم (موتور مستقل پایتون ۳.۱۰)',
@@ -173,7 +173,7 @@ export const translations = {
     table_exit_time: 'زمان خروج',
     table_travel_time: 'زمان سفر',
     table_speed: 'سرعت تخمینی',
-    table_confidence: 'درصد اطمینان',
+    table_confidence: 'امتیاز تطبیق*',
     table_category: 'نوع خودرو',
     table_status: 'وضعیت',
     // OD Matrix
@@ -189,7 +189,7 @@ export const translations = {
     modal_split: 'ترکیب وسایل نقلیه',
     export_csv: 'دریافت خروجی CSV',
     export_excel: 'دریافت اکسل (Excel)',
-    reset_seed_data: 'بارگذاری سناریوی آزمون پذیرش (آزادی)',
+    reset_seed_data: 'بازنشانی داده‌های نمایشی (ساختگی)',
     // Map
     map_title: 'نقشه شماتیک محدوده مطالعه و ایستگاه‌ها',
     map_subtitle: 'تعیین موقعیت دروازه‌های ورود (E01, E02) و خروج (X01, X02) و مسافت مسیرها',
@@ -202,3 +202,6 @@ export const translations = {
 export function getT(lang: Language) {
   return translations[lang] || translations.en;
 }
+
+/** Inline bilingual text for strings that do not need a dictionary key. */
+export const pick = (lang: Language, en: string, fa: string) => (lang === 'fa' ? fa : en);

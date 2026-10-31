@@ -1,510 +1,232 @@
-import React, { useState, useEffect, useRef } from 'react';
-import {
-  Mic,
-  MicOff,
-  Send,
-  Trash2,
-  AlertTriangle,
-  CheckCircle2,
-  Clock,
-  Car,
-  Truck,
-  Bus,
-  Bike,
-  HelpCircle,
-  ShieldCheck,
-  Zap
-} from 'lucide-react';
-import { User, Study, VehicleObservation } from '../types';
-import { Language, getT } from '../i18n';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, Bike, Bus, Car, CheckCircle2, Clock, CloudOff, HelpCircle, Mic, MicOff, RotateCcw, Send, ShieldCheck, Trash2, Truck, Zap } from 'lucide-react';
+import { api, ApiError, errorText } from '../api';
+import { Assignment, Category, Study, User, VehicleObservation } from '../types';
+import { Language, getT, pick } from '../i18n';
 import { normalizePlateDigits, parsePersianSpokenDigits } from '../utils/plateNormalization';
-import { saveOfflineObservation, QueuedObservation } from '../utils/offlineQueue';
+import { discardQueued, QueuedObservation, retryErrors, saveOfflineObservation } from '../utils/offlineQueue';
+import { fmtTime } from '../utils/time';
 
-interface FieldCollectorProps {
-  currentUser: User | null;
-  activeStudy: Study | null;
+interface Props {
+  user: User;
+  study: Study | null;
+  assignments: Assignment[]; // this user's assignments in the active study
+  categories: Category[];
   lang: Language;
-  onObservationAdded: (obs: VehicleObservation) => void;
-  recentObservations: VehicleObservation[];
-  onDeleteObservation: (id: string) => void;
   isOnline: boolean;
-  onRefreshQueue: () => void;
+  serverObservations: VehicleObservation[]; // this user's accepted observations
+  queued: QueuedObservation[]; // this device: pending + error items of this user
+  onChanged: () => void; // refresh server list + queue status
 }
 
-export const FieldCollector: React.FC<FieldCollectorProps> = ({
-  currentUser,
-  activeStudy,
-  lang,
-  onObservationAdded,
-  recentObservations,
-  onDeleteObservation,
-  isOnline,
-  onRefreshQueue,
-}) => {
+const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
+  CAR: Car, TAXI: Car, PICKUP: Truck, VAN: Truck, LIGHT_TRUCK: Truck, HEAVY_TRUCK: Truck, BUS: Bus, MINIBUS: Bus, MOTORCYCLE: Bike,
+};
+
+export const FieldCollector: React.FC<Props> = ({ user, study, assignments, categories, lang, isOnline, serverObservations, queued, onChanged }) => {
   const t = getT(lang);
-
-  // Determine current observation point
-  const assignedCode = currentUser?.assigned_point || 'E01';
-  const currentPoint = activeStudy?.points.find((p) => p.code === assignedCode) || {
-    id: 'p1',
-    code: assignedCode,
-    point_type: assignedCode.startsWith('E') ? 'ENTRY' : 'EXIT',
-    description: assignedCode.startsWith('E') ? 'Inbound Arterial Gate' : 'Outbound Gate',
-    x_percent: 50,
-    y_percent: 50,
-  };
-
-  const [plateSuffix, setPlateSuffix] = useState<string>('');
-  const [vehicleCategory, setVehicleCategory] = useState<string>('CAR');
-  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
-  const [warningMessage, setWarningMessage] = useState<string | null>(null);
-  const [successNotice, setSuccessNotice] = useState<string | null>(null);
-  const [isListening, setIsListening] = useState<boolean>(false);
-  const [speechError, setSpeechError] = useState<string | null>(null);
-  const [lastSubmissionTime, setLastSubmissionTime] = useState<number>(0);
-
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [pointCode, setPointCode] = useState<string>(() => localStorage.getItem('tl_point') || '');
+  const [plate, setPlate] = useState('');
+  const [category, setCategory] = useState<string>(() => localStorage.getItem('tl_default_cat') || 'CAR');
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<{ kind: 'ok' | 'warn' | 'error'; text: string } | null>(null);
+  const [listening, setListening] = useState(false);
+  const [clock, setClock] = useState('');
   const recognitionRef = useRef<any>(null);
+  const lockRef = useRef(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const tz = study?.timezone || 'Asia/Tehran';
 
-  // Time ticker
-  const [currentTime, setCurrentTime] = useState<string>('');
+  const point = assignments.find((a) => a.point_code === pointCode) ?? assignments[0];
+  useEffect(() => { if (point && point.point_code !== pointCode) setPointCode(point.point_code); }, [point, pointCode]);
+  useEffect(() => { if (pointCode) localStorage.setItem('tl_point', pointCode); }, [pointCode]);
+
   useEffect(() => {
-    const update = () => {
-      const now = new Date();
-      setCurrentTime(
-        now.toLocaleTimeString(lang === 'fa' ? 'fa-IR' : 'en-US', {
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit',
-          hour12: false,
-        })
-      );
+    const tick = () => setClock(fmtTime(new Date().toISOString(), tz, false, 'en'));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [tz]);
+
+  useEffect(() => { inputRef.current?.focus(); }, [pointCode]);
+
+  const speechSupported = typeof window !== 'undefined' && !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+  useEffect(() => {
+    if (!speechSupported) return;
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const rec = new SR();
+    rec.lang = 'fa-IR';
+    rec.continuous = false;
+    rec.interimResults = false;
+    rec.onstart = () => setListening(true);
+    rec.onend = () => setListening(false);
+    rec.onerror = (ev: any) => { setListening(false); setNotice({ kind: 'warn', text: pick(lang, `Speech error: ${ev.error}. Use the keypad.`, `خطای تشخیص گفتار: ${ev.error}. از صفحه‌کلید استفاده کنید.`) }); };
+    rec.onresult = (ev: any) => {
+      const heard = ev.results[0][0].transcript as string;
+      const digits = parsePersianSpokenDigits(heard);
+      if (digits) { setPlate(digits.slice(-3)); setNotice({ kind: 'ok', text: pick(lang, `Heard "${heard}" → ${digits.slice(-3)} (check, then record)`, `شنیده شد «${heard}» ← ${digits.slice(-3)} (بررسی کنید و ثبت بزنید)`) }); }
+      else setNotice({ kind: 'warn', text: pick(lang, `No digits found in "${heard}"`, `رقمی در «${heard}» پیدا نشد`) });
     };
-    update();
-    const interval = setInterval(update, 1000);
-    return () => clearInterval(interval);
-  }, [lang]);
+    recognitionRef.current = rec;
+    return () => { try { rec.abort(); } catch { /* ignore */ } };
+  }, [speechSupported, lang]);
 
-  // Keep input focused for quick typing
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
-
-  // Web Speech API for Persian spoken digits
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const SpeechRecognition =
-        (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      if (SpeechRecognition) {
-        const recognition = new SpeechRecognition();
-        recognition.lang = 'fa-IR';
-        recognition.continuous = false;
-        recognition.interimResults = false;
-
-        recognition.onstart = () => {
-          setIsListening(true);
-          setSpeechError(null);
-        };
-
-        recognition.onresult = (event: any) => {
-          const transcript = event.results[0][0].transcript;
-          const parsed = parsePersianSpokenDigits(transcript);
-          if (parsed) {
-            setPlateSuffix(parsed);
-            setSuccessNotice(`Heard: "${transcript}" → ${parsed}`);
-            setTimeout(() => setSuccessNotice(null), 3000);
-          } else {
-            setSpeechError(`Could not identify digits from: "${transcript}"`);
-          }
-          setIsListening(false);
-        };
-
-        recognition.onerror = (event: any) => {
-          console.warn('Speech error:', event.error);
-          setIsListening(false);
-          setSpeechError(`Speech error: ${event.error}`);
-        };
-
-        recognition.onend = () => {
-          setIsListening(false);
-        };
-
-        recognitionRef.current = recognition;
-      }
-    }
-  }, []);
-
-  const toggleVoiceInput = () => {
-    if (!recognitionRef.current) {
-      alert(t.voice_unsupported);
-      return;
-    }
-    if (isListening) {
-      recognitionRef.current.stop();
-    } else {
-      setSpeechError(null);
-      try {
-        recognitionRef.current.start();
-      } catch (err) {
-        console.error('Failed to start speech:', err);
-      }
-    }
+  const toggleVoice = () => {
+    const rec = recognitionRef.current;
+    if (!rec) return;
+    if (listening) rec.stop();
+    else { try { rec.start(); } catch { /* already started */ } }
   };
 
-  // Numpad key press
-  const handleNumpadPress = (digit: string) => {
-    if (plateSuffix.length < 3) {
-      setPlateSuffix((prev) => prev + digit);
-    }
-  };
+  const press = (d: string) => setPlate((p) => (p.length < 3 ? p + d : p));
+  const labelOf = (code: string) => { const c = categories.find((x) => x.code === code); return c ? (lang === 'fa' ? c.label_fa : c.label_en) : code; };
 
-  const handleBackspace = () => {
-    setPlateSuffix((prev) => prev.slice(0, -1));
-  };
+  const canRecord = !!study && !!point && study.status === 'ACTIVE';
 
-  const handleClear = () => {
-    setPlateSuffix('');
-    setWarningMessage(null);
-  };
-
-  // Submission logic with 1-2s speed, duplicate guard & offline fallback
-  const handleSubmit = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (isSubmitting) return;
-
-    const normalized = normalizePlateDigits(plateSuffix);
-    if (!normalized || normalized.length === 0) {
-      setWarningMessage(t.plate_suffix_placeholder);
-      return;
-    }
-
-    // Pad or trim to exactly 3 digits
-    const finalSuffix = normalized.padStart(3, '0').slice(-3);
+  const record = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (lockRef.current || !study || !point) return; // client-side submission lock
+    const suffix = normalizePlateDigits(plate);
+    if (suffix.length !== 3) { setNotice({ kind: 'warn', text: pick(lang, 'Enter exactly 3 digits (e.g. 042).', 'دقیقاً ۳ رقم وارد کنید (مثلاً ۰۴۲).') }); return; }
+    lockRef.current = true;
+    setBusy(true);
     const now = Date.now();
-    const exactTimestampIso = new Date().toISOString();
-    const idempotencyKey = `obs-${currentPoint.code}-${finalSuffix}-${now}`;
-
-    // Duplicate prevention check: if exact same suffix was submitted within 10 seconds at this station
-    const recentDuplicate = recentObservations.find(
-      (o) =>
-        o.point_code === currentPoint.code &&
-        o.plate_suffix === finalSuffix &&
-        now - new Date(o.observation_timestamp).getTime() < 12000
-    );
-
-    if (recentDuplicate) {
-      setWarningMessage(t.duplicate_warning);
-      setTimeout(() => setWarningMessage(null), 4000);
-    } else {
-      setWarningMessage(null);
-    }
-
-    setIsSubmitting(true);
-    setLastSubmissionTime(now);
-
-    const observationPayload: Partial<VehicleObservation> = {
-      study_id: activeStudy?.id || 'study-01',
-      point_code: currentPoint.code,
-      point_type: currentPoint.point_type,
-      plate_suffix: finalSuffix,
-      vehicle_category: vehicleCategory,
-      observation_timestamp: exactTimestampIso,
-      observer_id: currentUser?.id || 'u-anon',
-      idempotency_key: idempotencyKey,
+    const dup = [...serverObservations, ...queued].some((o) => o.point_code === point.point_code && o.plate_suffix === suffix && now - new Date(o.observation_timestamp).getTime() < 12_000);
+    const item: QueuedObservation = {
+      id: crypto.randomUUID(), owner_user_id: user.id, study_id: study.id, point_code: point.point_code, point_type: point.point_type,
+      plate_suffix: suffix, vehicle_category: category, observation_timestamp: new Date(now).toISOString(), idempotency_key: crypto.randomUUID(),
+      sync_status: 'PENDING', queued_at: now,
     };
-
-    if (isOnline) {
-      try {
-        const res = await fetch('/api/v1/observations', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(observationPayload),
-        });
-
-        if (!res.ok) {
-          throw new Error(`Server returned ${res.status}`);
-        }
-
-        const data = await res.json();
-        onObservationAdded(data.observation);
-        setSuccessNotice(`Recorded #${finalSuffix} [${currentPoint.code}]`);
-      } catch (err) {
-        console.warn('Network submission failed, routing to offline queue:', err);
-        // Fallback to IndexedDB queue
-        const offlineItem: QueuedObservation = {
-          id: `offline-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          study_id: activeStudy?.id || 'study-01',
-          point_code: currentPoint.code,
-          point_type: currentPoint.point_type,
-          plate_suffix: finalSuffix,
-          vehicle_category: vehicleCategory,
-          observation_timestamp: exactTimestampIso,
-          observer_id: currentUser?.id || 'u-anon',
-          idempotency_key: idempotencyKey,
-          sync_status: 'PENDING',
-          queued_at: Date.now(),
-        };
-
-        await saveOfflineObservation(offlineItem);
-        onRefreshQueue();
-        onObservationAdded({
-          ...offlineItem,
-          observer_name: currentUser?.full_name,
-        });
-        setSuccessNotice(`Saved offline #${finalSuffix}`);
+    try {
+      if (!isOnline) throw new ApiError(0, 'offline', 'network');
+      await api('POST', '/observations', { study_id: item.study_id, point_code: item.point_code, plate_suffix: suffix, vehicle_category: category, observed_at: item.observation_timestamp, idempotency_key: item.idempotency_key });
+      setNotice({ kind: dup ? 'warn' : 'ok', text: (dup ? t.duplicate_warning + ' ' : '') + pick(lang, `Recorded #${suffix} at ${point.point_code}`, `ثبت شد #${suffix} در ${point.point_code}`) });
+    } catch (err) {
+      const transient = err instanceof ApiError && (err.status === 0 || err.status >= 500 || err.status === 401 || err.status === 429);
+      if (transient) {
+        await saveOfflineObservation(item); // never lose a sighting to a connectivity problem
+        setNotice({ kind: 'warn', text: pick(lang, `Saved on this device #${suffix}; it will upload when the connection returns.`, `روی همین دستگاه ذخیره شد #${suffix}؛ با برگشت اتصال ارسال می‌شود.`) });
+      } else {
+        setNotice({ kind: 'error', text: pick(lang, 'Not recorded: ', 'ثبت نشد: ') + errorText(err) });
+        lockRef.current = false;
+        setBusy(false);
+        return;
       }
-    } else {
-      // Offline mode direct queue
-      const offlineItem: QueuedObservation = {
-        id: `offline-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        study_id: activeStudy?.id || 'study-01',
-        point_code: currentPoint.code,
-        point_type: currentPoint.point_type,
-        plate_suffix: finalSuffix,
-        vehicle_category: vehicleCategory,
-        observation_timestamp: exactTimestampIso,
-        observer_id: currentUser?.id || 'u-anon',
-        idempotency_key: idempotencyKey,
-        sync_status: 'PENDING',
-        queued_at: Date.now(),
-      };
-
-      await saveOfflineObservation(offlineItem);
-      onRefreshQueue();
-      onObservationAdded({
-        ...offlineItem,
-        observer_name: currentUser?.full_name,
-      });
-      setSuccessNotice(`Saved locally (Offline) #${finalSuffix}`);
     }
-
-    // Reset plate input for next vehicle
-    setPlateSuffix('');
-    setIsSubmitting(false);
+    setPlate('');
+    onChanged();
+    lockRef.current = false;
+    setBusy(false);
     inputRef.current?.focus();
-    setTimeout(() => setSuccessNotice(null), 2500);
   };
 
-  const categories = [
-    { id: 'CAR', label: t.category_car, icon: Car, color: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' },
-    { id: 'TAXI', label: t.category_taxi, icon: Car, color: 'bg-amber-500/20 text-amber-300 border-amber-500/40' },
-    { id: 'PICKUP', label: t.category_pickup, icon: Truck, color: 'bg-blue-500/20 text-blue-300 border-blue-500/40' },
-    { id: 'MOTORCYCLE', label: t.category_motorcycle, icon: Bike, color: 'bg-purple-500/20 text-purple-300 border-purple-500/40' },
-    { id: 'BUS', label: t.category_bus, icon: Bus, color: 'bg-rose-500/20 text-rose-300 border-rose-500/40' },
-    { id: 'HEAVY TRUCK', label: t.category_heavy_truck, icon: Truck, color: 'bg-orange-500/20 text-orange-300 border-orange-500/40' },
-    { id: 'OTHER', label: t.category_other, icon: HelpCircle, color: 'bg-slate-700/50 text-slate-300 border-slate-600' },
-  ];
+  const undo = async (o: { id: string; pending?: boolean }) => {
+    try {
+      if (o.pending) await discardQueued(user.id, o.id);
+      else await api('POST', `/observations/${o.id}/void`, { reason: 'undo by observer' });
+      onChanged();
+    } catch (err) {
+      setNotice({ kind: 'error', text: errorText(err) });
+    }
+  };
 
-  const stationFilteredRecent = recentObservations
-    .filter((o) => o.point_code === currentPoint.code)
-    .slice(0, 8);
+  const recent = useMemo(() => {
+    const q = queued.map((i) => ({ id: i.id, point_code: i.point_code, plate_suffix: i.plate_suffix, vehicle_category: i.vehicle_category, observation_timestamp: i.observation_timestamp, pending: true, error: i.sync_status === 'ERROR' ? i.error || 'rejected' : undefined }));
+    const s = serverObservations.map((o) => ({ id: o.id, point_code: o.point_code, plate_suffix: o.plate_suffix, vehicle_category: o.vehicle_category, observation_timestamp: o.observation_timestamp, pending: false, error: undefined as string | undefined }));
+    return [...q, ...s].filter((o) => !point || o.point_code === point.point_code).sort((a, b) => b.observation_timestamp.localeCompare(a.observation_timestamp)).slice(0, 10);
+  }, [queued, serverObservations, point]);
 
-  const isEntry = currentPoint.point_type === 'ENTRY';
-
-  return (
-    <div className="max-w-2xl mx-auto px-4 py-4 space-y-4">
-      {/* Station Context Banner */}
-      <div
-        className={`rounded-2xl p-4 shadow-lg border transition-all ${
-          isEntry
-            ? 'bg-gradient-to-br from-emerald-950/80 via-slate-900 to-emerald-900/40 border-emerald-600/40'
-            : 'bg-gradient-to-br from-indigo-950/80 via-slate-900 to-indigo-900/40 border-indigo-600/40'
-        }`}
-      >
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="flex items-center gap-2">
-              <span
-                className={`text-xs uppercase font-extrabold px-3 py-1 rounded-full tracking-wider border shadow-sm ${
-                  isEntry
-                    ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-black'
-                    : 'bg-indigo-500 text-white border-indigo-400 font-black'
-                }`}
-              >
-                {isEntry ? t.station_type_entry : t.station_type_exit}
-              </span>
-              <span className="text-xl font-black font-mono tracking-tight text-white">
-                {currentPoint.code}
-              </span>
-            </div>
-            <p className="text-xs text-slate-300 mt-1 font-medium">
-              {currentPoint.description}
-            </p>
-          </div>
-
-          <div className="text-right">
-            <div className="flex items-center justify-end gap-1.5 text-xs text-slate-300">
-              <Clock className="w-3.5 h-3.5 text-slate-400" />
-              <span className="font-mono font-bold text-sm text-teal-300">{currentTime}</span>
-            </div>
-            <p className="text-[11px] text-slate-400 mt-0.5">
-              {currentUser?.full_name || 'Field Observer'}
-            </p>
-          </div>
+  if (!study) return <p className="p-8 text-center text-slate-400">{pick(lang, 'No study selected.', 'طرحی انتخاب نشده است.')}</p>;
+  if (!assignments.length) {
+    return (
+      <div className="max-w-xl mx-auto p-6" data-testid="no-assignment">
+        <div className="rounded-2xl border border-amber-700/50 bg-amber-950/40 p-5 text-amber-200 text-sm space-y-1">
+          <p className="font-bold flex items-center gap-2"><AlertTriangle className="w-4 h-4" />{pick(lang, 'You are not assigned to an observation point in this study.', 'شما در این طرح به هیچ ایستگاهی اختصاص داده نشده‌اید.')}</p>
+          <p className="text-xs text-amber-200/80">{pick(lang, 'Recording is disabled so that nothing is saved under the wrong location. Ask your administrator to assign you.', 'ثبت غیرفعال است تا چیزی در مکان اشتباه ذخیره نشود. از مدیر بخواهید شما را تخصیص دهد.')}</p>
         </div>
       </div>
+    );
+  }
+  const isEntry = point!.point_type === 'ENTRY';
 
-      {/* Main Entry Card */}
-      <div className="bg-slate-900 rounded-3xl p-5 shadow-2xl border border-slate-800 space-y-4">
-        {/* Plate Display Input */}
-        <form onSubmit={handleSubmit} className="space-y-3">
-          <div className="flex items-center justify-between">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-              <Zap className="w-4 h-4 text-amber-400" />
-              <span>{t.plate_suffix_label}</span>
-            </label>
-            {successNotice && (
-              <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1 animate-pulse">
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>{successNotice}</span>
-              </span>
-            )}
+  return (
+    <div className="max-w-2xl mx-auto px-4 py-4 space-y-4" data-testid="collector">
+      <div className={`rounded-2xl p-4 border ${isEntry ? 'bg-gradient-to-br from-emerald-950/80 via-slate-900 to-emerald-900/40 border-emerald-600/40' : 'bg-gradient-to-br from-indigo-950/80 via-slate-900 to-indigo-900/40 border-indigo-600/40'}`} data-testid="station-banner">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className={`text-xs font-black px-3 py-1 rounded-full ${isEntry ? 'bg-emerald-500 text-slate-950' : 'bg-indigo-500 text-white'}`}>{isEntry ? t.station_type_entry : t.station_type_exit}</span>
+              <span className="text-2xl font-black font-mono text-white" data-testid="station-code">{point!.point_code}</span>
+              {study.is_demo && <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-fuchsia-500/20 text-fuchsia-200 border border-fuchsia-500/40">DEMO</span>}
+            </div>
+            <p className="text-xs text-slate-300 mt-1">{point!.description}</p>
+            <p className="text-[11px] text-slate-400 mt-0.5">{study.name}</p>
           </div>
-
-          <div className="relative">
-            <input
-              ref={inputRef}
-              type="text"
-              inputMode="numeric"
-              pattern="[0-9]*"
-              maxLength={4}
-              value={plateSuffix}
-              onChange={(e) => {
-                const norm = normalizePlateDigits(e.target.value);
-                setPlateSuffix(norm.slice(0, 3));
-              }}
-              placeholder="387"
-              className="w-full h-20 text-center font-mono text-5xl font-black tracking-widest bg-slate-950 border-2 border-slate-700 focus:border-teal-400 rounded-2xl text-white placeholder-slate-600 focus:outline-none focus:ring-4 focus:ring-teal-500/20 shadow-inner transition"
-              autoFocus
-            />
-
-            {/* Clear Button */}
-            {plateSuffix && (
-              <button
-                type="button"
-                onClick={handleClear}
-                className="absolute right-4 top-1/2 -translate-y-1/2 w-9 h-9 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition"
-                title="Clear"
-              >
-                ✕
-              </button>
-            )}
+          <div className="text-end shrink-0">
+            <div className="flex items-center justify-end gap-1.5 text-teal-300 font-mono font-bold text-sm"><Clock className="w-3.5 h-3.5 text-slate-400" />{clock}</div>
+            <p className="text-[11px] text-slate-400">{user.full_name}</p>
+            <p className={`text-[11px] font-semibold ${isOnline ? 'text-emerald-400' : 'text-amber-400'}`}>{isOnline ? t.online : t.offline}</p>
           </div>
+        </div>
+        {assignments.length > 1 && (
+          <div className="mt-3 flex gap-2 flex-wrap" role="group" aria-label={pick(lang, 'Your points', 'ایستگاه‌های شما')}>
+            {assignments.map((a) => (
+              <button key={a.point_code} type="button" onClick={() => setPointCode(a.point_code)} aria-pressed={a.point_code === point!.point_code}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${a.point_code === point!.point_code ? 'bg-teal-500 text-slate-950 border-teal-400' : 'bg-slate-800 text-slate-300 border-slate-700'}`}>{a.point_code}</button>
+            ))}
+          </div>
+        )}
+      </div>
 
-          {/* Voice Input Button (Persian Speech Recognition) */}
-          <div className="flex items-center justify-between gap-2 pt-1">
-            <button
-              type="button"
-              onClick={toggleVoiceInput}
-              className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs font-bold transition border ${
-                isListening
-                  ? 'bg-rose-600 text-white border-rose-500 animate-pulse'
-                  : 'bg-slate-800 hover:bg-slate-700/80 text-teal-300 border-teal-500/30'
-              }`}
-            >
-              {isListening ? (
-                <>
-                  <MicOff className="w-4 h-4" />
-                  <span>{t.listening}</span>
-                </>
-              ) : (
-                <>
-                  <Mic className="w-4 h-4 text-teal-400" />
-                  <span>{t.voice_input}</span>
-                </>
-              )}
+      {study.status !== 'ACTIVE' && (
+        <p className="rounded-xl border border-amber-700/50 bg-amber-950/40 p-3 text-xs text-amber-200" data-testid="study-not-active">{pick(lang, `This study is ${study.status}: recording is disabled.`, `این طرح در وضعیت ${study.status} است؛ ثبت غیرفعال است.`)}</p>
+      )}
+
+      <div className="bg-slate-900 rounded-3xl p-5 border border-slate-800 space-y-4">
+        <form onSubmit={record} className="space-y-3">
+          <label className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5"><Zap className="w-4 h-4 text-amber-400" />{t.plate_suffix_label}</label>
+          <input
+            ref={inputRef} value={plate} type="text" inputMode="numeric" pattern="[0-9]*" maxLength={3} placeholder="387" autoComplete="off" dir="ltr" data-testid="plate-input" aria-label={t.plate_suffix_label}
+            onChange={(e) => setPlate(normalizePlateDigits(e.target.value).slice(0, 3))}
+            className="w-full h-20 text-center font-mono text-5xl font-black tracking-widest bg-slate-950 border-2 border-slate-700 focus:border-teal-400 rounded-2xl text-white placeholder-slate-600 focus:outline-none focus:ring-4 focus:ring-teal-500/20"
+          />
+          <div className="flex gap-2">
+            <button type="button" onClick={toggleVoice} disabled={!speechSupported || !canRecord} title={speechSupported ? '' : t.voice_unsupported}
+              className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-xs font-bold border disabled:opacity-40 ${listening ? 'bg-rose-600 text-white border-rose-500 animate-pulse' : 'bg-slate-800 text-teal-300 border-teal-500/30'}`}>
+              {listening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}<span>{listening ? t.listening : t.voice_input}</span>
             </button>
-
-            <button
-              type="submit"
-              disabled={isSubmitting || !plateSuffix}
-              className={`flex-2 flex items-center justify-center gap-2 py-3 px-5 rounded-xl font-bold text-sm tracking-wide transition shadow-lg ${
-                plateSuffix
-                  ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/25 active:scale-95'
-                  : 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed'
-              }`}
-            >
-              <Send className="w-4 h-4" />
-              <span>{t.submit_button}</span>
+            <button type="submit" disabled={busy || plate.length !== 3 || !canRecord} data-testid="record-button"
+              className={`flex-[2] flex items-center justify-center gap-2 py-3 px-5 rounded-xl font-bold text-sm ${plate.length === 3 && canRecord ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 active:scale-95' : 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed'}`}>
+              <Send className="w-4 h-4" /><span>{t.submit_button}</span>
             </button>
           </div>
-
-          {speechError && (
-            <p className="text-[11px] text-amber-400 bg-amber-950/40 p-2 rounded-lg border border-amber-800/40">
-              {speechError}
-            </p>
-          )}
-
-          {warningMessage && (
-            <div className="p-2.5 rounded-xl bg-amber-950/60 border border-amber-700/60 text-amber-300 text-xs flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400" />
-              <span>{warningMessage}</span>
+          {!speechSupported && <p className="text-[11px] text-slate-500">{t.voice_unsupported}</p>}
+          {notice && (
+            <div role="status" data-testid="notice" className={`p-2.5 rounded-xl text-xs flex items-start gap-2 border ${notice.kind === 'ok' ? 'bg-emerald-950/50 border-emerald-700/50 text-emerald-300' : notice.kind === 'warn' ? 'bg-amber-950/60 border-amber-700/60 text-amber-300' : 'bg-rose-950/60 border-rose-700/60 text-rose-200'}`}>
+              {notice.kind === 'ok' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertTriangle className="w-4 h-4 shrink-0" />}<span>{notice.text}</span>
             </div>
           )}
         </form>
 
-        {/* Rapid Touch Numpad (Optimized for 1-2s Field Entry) */}
-        <div className="space-y-2 pt-2 border-t border-slate-800">
-          <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider text-center">
-            {lang === 'fa' ? 'صفحه کلید سریع اعداد (لمسی)' : 'Rapid Touch Numpad'}
-          </p>
-          <div className="grid grid-cols-3 gap-2.5">
-            {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((digit) => (
-              <button
-                key={digit}
-                type="button"
-                onClick={() => handleNumpadPress(digit)}
-                className="h-14 rounded-2xl bg-slate-800/90 hover:bg-slate-700 active:bg-teal-600 active:text-white text-slate-100 font-mono text-2xl font-bold border border-slate-700/80 shadow-md transition transform active:scale-95 flex items-center justify-center"
-              >
-                {digit}
-              </button>
-            ))}
-            <button
-              type="button"
-              onClick={handleClear}
-              className="h-14 rounded-2xl bg-slate-800 hover:bg-rose-950/40 text-rose-400 font-bold text-xs uppercase tracking-wider border border-slate-700 transition active:scale-95 flex items-center justify-center"
-            >
-              C
-            </button>
-            <button
-              type="button"
-              onClick={() => handleNumpadPress('0')}
-              className="h-14 rounded-2xl bg-slate-800/90 hover:bg-slate-700 active:bg-teal-600 active:text-white text-slate-100 font-mono text-2xl font-bold border border-slate-700/80 shadow-md transition transform active:scale-95 flex items-center justify-center"
-            >
-              0
-            </button>
-            <button
-              type="button"
-              onClick={handleBackspace}
-              className="h-14 rounded-2xl bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold text-lg border border-slate-700 transition active:scale-95 flex items-center justify-center"
-            >
-              ⌫
-            </button>
-          </div>
+        <div dir="ltr" className="grid grid-cols-3 gap-2.5 pt-2 border-t border-slate-800" aria-label="Keypad">
+          {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => (
+            <button key={d} type="button" onClick={() => press(d)} disabled={!canRecord} data-testid={`key-${d}`} className="h-14 rounded-2xl bg-slate-800 active:bg-teal-600 text-slate-100 font-mono text-2xl font-bold border border-slate-700 disabled:opacity-40">{d}</button>
+          ))}
+          <button type="button" onClick={() => setPlate('')} aria-label="Clear" className="h-14 rounded-2xl bg-slate-800 text-rose-400 font-bold border border-slate-700">C</button>
+          <button type="button" onClick={() => press('0')} disabled={!canRecord} data-testid="key-0" className="h-14 rounded-2xl bg-slate-800 active:bg-teal-600 text-slate-100 font-mono text-2xl font-bold border border-slate-700 disabled:opacity-40">0</button>
+          <button type="button" onClick={() => setPlate((p) => p.slice(0, -1))} aria-label="Backspace" className="h-14 rounded-2xl bg-slate-800 text-amber-400 font-bold text-lg border border-slate-700">⌫</button>
         </div>
 
-        {/* Vehicle Classification Selector */}
         <div className="space-y-2 pt-2 border-t border-slate-800">
-          <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block">
-            {t.vehicle_category}
-          </label>
+          <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block">{t.vehicle_category} <span className="normal-case font-normal text-slate-500">({pick(lang, 'optional', 'اختیاری')})</span></label>
           <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
-            {categories.map((cat) => {
-              const Icon = cat.icon;
-              const isSelected = vehicleCategory === cat.id;
+            {categories.map((c) => {
+              const Icon = ICONS[c.code] ?? HelpCircle;
+              const on = category === c.code;
               return (
-                <button
-                  key={cat.id}
-                  type="button"
-                  onClick={() => setVehicleCategory(cat.id)}
-                  className={`py-2 px-2.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 border transition ${
-                    isSelected
-                      ? 'bg-teal-500 text-slate-950 border-teal-400 font-bold shadow-md shadow-teal-500/20'
-                      : 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 border-slate-700/80'
-                  }`}
-                >
-                  <Icon className="w-3.5 h-3.5 shrink-0" />
-                  <span className="truncate">{cat.label}</span>
+                <button key={c.code} type="button" aria-pressed={on} data-testid={`cat-${c.code}`} onClick={() => { setCategory(c.code); localStorage.setItem('tl_default_cat', c.code); }}
+                  className={`py-2 px-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 border ${on ? 'bg-teal-500 text-slate-950 border-teal-400' : 'bg-slate-800/80 text-slate-300 border-slate-700'}`}>
+                  <Icon className="w-3.5 h-3.5 shrink-0" /><span className="truncate">{lang === 'fa' ? c.label_fa : c.label_en}</span>
                 </button>
               );
             })}
@@ -512,56 +234,30 @@ export const FieldCollector: React.FC<FieldCollectorProps> = ({
         </div>
       </div>
 
-      {/* Recent Observations at This Station */}
-      <div className="bg-slate-900 rounded-3xl p-5 shadow-xl border border-slate-800 space-y-3">
+      <div className="bg-slate-900 rounded-3xl p-5 border border-slate-800 space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-            <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            <span>{t.recent_records}</span>
-          </h3>
-          <span className="text-xs text-slate-500 font-mono">
-            {stationFilteredRecent.length} logged
-          </span>
+          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5"><ShieldCheck className="w-4 h-4 text-emerald-400" />{t.recent_records}</h3>
+          {queued.some((q) => q.sync_status === 'ERROR') && (
+            <button type="button" onClick={async () => { await retryErrors(user.id); onChanged(); }} className="text-xs text-amber-300 flex items-center gap-1"><RotateCcw className="w-3 h-3" />{pick(lang, 'Retry failed', 'تلاش دوباره')}</button>
+          )}
         </div>
-
-        {stationFilteredRecent.length === 0 ? (
-          <p className="text-xs text-slate-500 text-center py-4">{t.no_recent}</p>
-        ) : (
-          <div className="space-y-1.5">
-            {stationFilteredRecent.map((obs) => {
-              const timeStr = new Date(obs.observation_timestamp).toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit',
-                hour12: false,
-              });
-
-              return (
-                <div
-                  key={obs.id}
-                  className="flex items-center justify-between p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 hover:border-slate-700 text-xs transition"
-                >
-                  <div className="flex items-center gap-3">
-                    <span className="font-mono text-base font-extrabold text-white tracking-widest bg-slate-800 px-2 py-0.5 rounded-lg border border-slate-700">
-                      {obs.plate_suffix}
-                    </span>
-                    <div>
-                      <span className="font-semibold text-teal-400">{obs.vehicle_category}</span>
-                      <span className="text-slate-500 text-[11px] ml-2 font-mono">{timeStr}</span>
-                    </div>
+        {recent.length === 0 ? <p className="text-xs text-slate-500 text-center py-4">{t.no_recent}</p> : (
+          <ul className="space-y-1.5" data-testid="recent-list">
+            {recent.map((o) => (
+              <li key={o.id} className={`flex items-center justify-between p-2.5 rounded-xl border text-xs ${o.error ? 'bg-rose-950/40 border-rose-800/60' : 'bg-slate-950/60 border-slate-800'}`}>
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className="font-mono text-base font-extrabold text-white tracking-widest bg-slate-800 px-2 py-0.5 rounded-lg border border-slate-700">{o.plate_suffix}</span>
+                  <div className="min-w-0">
+                    <span className="font-semibold text-teal-400">{labelOf(o.vehicle_category)}</span>
+                    <span className="text-slate-500 text-[11px] ms-2 font-mono">{fmtTime(o.observation_timestamp, tz)}</span>
+                    {o.pending && !o.error && <span className="ms-2 inline-flex items-center gap-1 text-amber-300 text-[11px]"><CloudOff className="w-3 h-3" />{pick(lang, 'pending upload', 'در انتظار ارسال')}</span>}
+                    {o.error && <p className="text-rose-300 text-[11px] truncate">{o.error}</p>}
                   </div>
-
-                  <button
-                    onClick={() => onDeleteObservation(obs.id)}
-                    className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 transition"
-                    title={t.undo_delete}
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
                 </div>
-              );
-            })}
-          </div>
+                <button type="button" onClick={() => undo(o)} className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-950/40" title={t.undo_delete} aria-label={t.undo_delete}><Trash2 className="w-3.5 h-3.5" /></button>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
     </div>

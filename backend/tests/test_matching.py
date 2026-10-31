@@ -50,7 +50,7 @@ class TestMatching(unittest.TestCase):
         self.assertEqual(m["travel_time_seconds"], 250.0)
         self.assertAlmostEqual(m["estimated_speed_kmh"], 36.0, places=1)
         self.assertEqual(m["match_status"], "MATCHED")
-        self.assertGreaterEqual(m["match_score"], 85.0)
+        self.assertEqual(m["match_score"], 90.0)  # 40 + 20 (same category) + 30 (36 km/h is plausible)
         self.assertIn("not a probability", res["summary"]["method_note"])
 
     def test_leading_zero_preserved(self):
@@ -131,6 +131,28 @@ class TestMatching(unittest.TestCase):
     def test_zero_width_window_does_not_divide_by_zero(self):
         res = PartialPlateMatcher(100, 100).match_observations([obs("a", "E01", "ENTRY", "900", 0.0), obs("b", "X01", "EXIT", "900", 100.0)])
         self.assertEqual(len(res["matches"]), 1)
+
+
+class TestScore(unittest.TestCase):
+    def test_score_discriminates_and_never_saturates(self):
+        m = PartialPlateMatcher(30, 900, False, {"E01->X01": 2500.0})
+        good, _ = m.score(250, "CAR", "CAR", 2500)       # 36 km/h
+        slow, _ = m.score(800, "CAR", "CAR", 2500)       # 11 km/h
+        fast, _ = m.score(70, "CAR", "CAR", 2500)        # 128 km/h
+        mismatch, _ = m.score(250, "CAR", "BUS", 2500)
+        self.assertGreater(good, slow)
+        self.assertGreater(slow, fast)
+        self.assertGreater(good, mismatch)
+        self.assertLessEqual(good, 95.0)
+        absurd, spd = m.score(5, "CAR", "CAR", 2500)     # 1800 km/h
+        self.assertLess(absurd, 40.0)
+        self.assertGreater(spd, 1000)
+
+    def test_without_distance_window_position_is_used(self):
+        m = PartialPlateMatcher(30, 900)
+        mid, _ = m.score(465, "CAR", "CAR", None)
+        edge, _ = m.score(31, "CAR", "CAR", None)
+        self.assertGreater(mid, edge)
 
 
 class TestTimestamps(unittest.TestCase):

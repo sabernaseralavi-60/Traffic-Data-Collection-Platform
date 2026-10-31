@@ -7,7 +7,7 @@ counts, and report export. Pure functions over plain dictionaries: it knows noth
 or HTTP layer (spec 9.1: matching independent of the database interface).
 
 IMPORTANT (method limits): a three-digit suffix is not a vehicle identifier. A MATCHED record is a
-*probable* journey. `match_score` is a heuristic ranking value (5-99), NOT a probability.
+*probable* journey. `match_score` is a heuristic ranking value (5-95), NOT a probability.
 """
 
 from __future__ import annotations
@@ -139,16 +139,18 @@ class PartialPlateMatcher:
 
     def score(self, travel_time_sec: float, entry_cat: str, exit_cat: str,
               distance_m: Optional[float] = None) -> Tuple[float, Optional[float]]:
-        """Heuristic ranking score (5-99) and estimated average journey speed (km/h).
-        base 65 for equal suffix; +category agreement; +plausible average speed (when the route
-        distance is configured) or +position inside the time window (when it is not)."""
-        score = 65.0
+        """Heuristic ranking score (5-95) and estimated average journey speed (km/h). NOT a probability.
+        base 40 (equal suffix) + category agreement (+20 equal, +8 one unknown, -20 conflict, +5 none given)
+        + plausibility of the average speed when the route distance is configured (0..+30, graded: full marks for
+        15-60 km/h, tapering to 0 at 5 and 100 km/h, -30 below 3 or above 140) or, when it is not, the position of
+        the travel time inside the allowed window (0..+15). The grading keeps scores from saturating."""
+        score = 40.0
         e, x = _norm_cat(entry_cat), _norm_cat(exit_cat)
         if e and x:
             if e == x:
-                score += 15.0
+                score += 20.0
             elif e in GENERIC_CATEGORIES or x in GENERIC_CATEGORIES:
-                score += 5.0
+                score += 8.0
             else:
                 score -= 20.0
         else:
@@ -157,18 +159,20 @@ class PartialPlateMatcher:
         speed_kmh = None
         if distance_m is not None and distance_m > 0 and travel_time_sec > 0:
             speed_kmh = (distance_m / travel_time_sec) * 3.6
-            if 15.0 <= speed_kmh <= 80.0:
-                score += 20.0
-            elif 5.0 <= speed_kmh < 15.0 or 80.0 < speed_kmh <= 110.0:
-                score += 10.0
-            elif speed_kmh > 140.0 or speed_kmh < 3.0:
-                score -= 35.0
+            if speed_kmh > 140.0 or speed_kmh < 3.0:
+                score -= 30.0
+            elif 15.0 <= speed_kmh <= 60.0:
+                score += 30.0
+            elif speed_kmh < 15.0:
+                score += 30.0 * max(0.0, (speed_kmh - 5.0) / 10.0)
+            else:
+                score += 30.0 * max(0.0, (100.0 - speed_kmh) / 40.0)
         else:
             span = self.max_travel_time_sec - self.min_travel_time_sec
             if span > 0:
                 mid = (self.min_travel_time_sec + self.max_travel_time_sec) / 2.0
-                score += max(0.0, 20.0 * (1.0 - abs(travel_time_sec - mid) / span))
-        return round(max(5.0, min(99.0, score)), 1), (round(speed_kmh, 1) if speed_kmh is not None else None)
+                score += max(0.0, 15.0 * (1.0 - abs(travel_time_sec - mid) / span))
+        return round(max(5.0, min(95.0, score)), 1), (round(speed_kmh, 1) if speed_kmh is not None else None)
 
     # kept for backwards compatibility with older callers/tests
     def calculate_confidence(self, *a: Any, **k: Any) -> Tuple[float, Optional[float]]:

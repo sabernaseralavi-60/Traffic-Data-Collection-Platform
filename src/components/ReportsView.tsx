@@ -1,263 +1,90 @@
 import React from 'react';
-import {
-  FileSpreadsheet,
-  Download,
-  Printer,
-  ShieldCheck,
-  CheckCircle2,
-  Layers,
-  Clock,
-  Compass,
-  FileText
-} from 'lucide-react';
-import { Study, ODMatrixData, TravelTimeStats, MatchingSummary } from '../types';
-import { Language, getT } from '../i18n';
+import { Download, FileSpreadsheet, Printer } from 'lucide-react';
+import { download } from '../api';
+import { Report, Study } from '../types';
+import { Language, getT, pick } from '../i18n';
+import { fmtDuration } from '../utils/time';
 
-interface ReportsViewProps {
-  study: Study | null;
-  lang: Language;
-  odMatrix: ODMatrixData | null;
-  travelTimeStats: TravelTimeStats | null;
-  matchingSummary: MatchingSummary | null;
-}
+interface Props { study: Study | null; lang: Language; report: Report | null }
 
-export const ReportsView: React.FC<ReportsViewProps> = ({
-  study,
-  lang,
-  odMatrix,
-  travelTimeStats,
-  matchingSummary,
-}) => {
+/** Printable report: every number comes from the matching engine's result for the stored observations. */
+export const ReportsView: React.FC<Props> = ({ study, lang, report }) => {
   const t = getT(lang);
-
-  const handleDownloadCSV = () => {
-    if (!study) return;
-    window.location.href = `/api/v1/studies/${study.id}/export`;
-  };
-
-  const handlePrint = () => {
-    window.print();
-  };
+  if (!study) return null;
+  const s = report?.summary;
+  const od = report?.analytics.od_matrix;
+  const st = report?.analytics.travel_time_stats;
+  const generated = new Date().toISOString().slice(0, 10);
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 space-y-6">
-      {/* Action Bar */}
-      <div className="bg-slate-900 rounded-3xl p-6 border border-slate-800 shadow-2xl flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 print:hidden">
+      <div className="bg-slate-900 rounded-3xl p-6 border border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 print:hidden">
         <div>
-          <h2 className="text-xl font-bold text-white flex items-center gap-2">
-            <FileSpreadsheet className="w-5 h-5 text-teal-400" />
-            <span>{t.nav_reports}</span>
-          </h2>
-          <p className="text-xs text-slate-400 mt-1">
-            Export validated field survey datasets and print formal engineering study report
-          </p>
+          <h2 className="text-xl font-bold text-white flex items-center gap-2"><FileSpreadsheet className="w-5 h-5 text-teal-400" />{t.nav_reports}</h2>
+          <p className="text-xs text-slate-400 mt-1">{pick(lang, 'Reports are generated from the stored, validated records. PDF = your browser\'s "Save as PDF" of the report below.', 'گزارش‌ها از رکوردهای ذخیره‌شده و اعتبارسنجی‌شده ساخته می‌شوند. PDF = «ذخیره به‌صورت PDF» مرورگر برای گزارش زیر.')}</p>
         </div>
-
-        <div className="flex items-center gap-3">
-          <button
-            onClick={handleDownloadCSV}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition shadow-lg shadow-emerald-500/20 active:scale-95"
-          >
-            <Download className="w-4 h-4" />
-            <span>{t.export_csv}</span>
-          </button>
-
-          <button
-            onClick={handlePrint}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
-          >
-            <Printer className="w-4 h-4 text-teal-400" />
-            <span>Print / Save PDF</span>
-          </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button onClick={() => download(`/studies/${study.id}/export.xlsx`)} data-testid="export-xlsx" className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950"><Download className="w-4 h-4" />Excel (.xlsx)</button>
+          <button onClick={() => download(`/studies/${study.id}/export.csv`)} data-testid="export-csv" className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-slate-800 border border-slate-700 text-slate-200"><Download className="w-4 h-4" />CSV</button>
+          <button onClick={() => window.print()} className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-slate-800 border border-slate-700 text-slate-200"><Printer className="w-4 h-4 text-teal-400" />{pick(lang, 'Print / PDF', 'چاپ / PDF')}</button>
         </div>
       </div>
 
-      {/* Formal Printable Traffic Engineering Study Report Document */}
-      <div className="bg-white text-slate-900 rounded-3xl p-8 sm:p-12 shadow-2xl border border-slate-200 space-y-8 font-sans">
-        {/* Header Document Banner */}
-        <div className="border-b-2 border-slate-900 pb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs uppercase tracking-widest font-black px-2.5 py-0.5 rounded bg-slate-900 text-white">
-                OFFICIAL REPORT
-              </span>
-              <span className="text-xs font-mono text-slate-500">
-                TL-TMG-2026-C8
-              </span>
-            </div>
-            <h1 className="text-2xl font-black text-slate-900 tracking-tight mt-2">
-              {study?.name || 'Traffic Engineering Cordon Survey Report'}
-            </h1>
-            <p className="text-xs text-slate-600 mt-1">
-              Methodology: FHWA Traffic Monitoring Guide (TMG 2022) Partial License Plate Matching
-            </p>
-          </div>
+      <article className="bg-white text-slate-900 rounded-3xl p-8 sm:p-12 border border-slate-200 space-y-7" data-testid="report-article">
+        <header className="border-b-2 border-slate-900 pb-5 space-y-1">
+          {study.is_demo && <p className="text-xs font-black text-fuchsia-700">DEMO — {pick(lang, 'synthetic data, not real observations', 'داده‌های ساختگی، نه مشاهدات واقعی')}</p>}
+          <h1 className="text-2xl font-black">{study.name}</h1>
+          <p className="text-xs text-slate-600 font-mono">{study.study_date} • {study.start_time}-{study.end_time} • {study.timezone} • {pick(lang, 'Supervisor', 'سرپرست')}: {study.supervisor_name || '-'} • {pick(lang, 'Generated', 'تهیه')}: {generated}</p>
+          <p className="text-xs text-slate-600">{pick(lang, 'Method: partial (3-digit) plate-suffix matching with a feasible travel-time window. Results are probable journeys; the score is a heuristic, not a probability.', 'روش: انطباق ۳ رقم انتهای پلاک با بازهٔ زمان سفر مجاز. نتایج، سفرهای محتمل‌اند؛ امتیاز ابتکاری است، نه احتمال.')}</p>
+        </header>
 
-          <div className="text-right text-xs text-slate-600 font-mono">
-            <p><span className="font-bold">Study Date:</span> {study?.study_date}</p>
-            <p><span className="font-bold">Observation Window:</span> {study?.start_time} - {study?.end_time}</p>
-            <p><span className="font-bold">Supervisor:</span> {study?.supervisor_name}</p>
-          </div>
-        </div>
+        {!report || !s || !od || !st ? <p className="text-sm text-slate-500">{pick(lang, 'No results yet.', 'هنوز نتیجه‌ای نیست.')}</p> : (
+          <>
+            <section className="grid grid-cols-2 sm:grid-cols-4 gap-4 p-5 rounded-2xl bg-slate-50 border border-slate-200 text-sm">
+              {[
+                [pick(lang, 'Observations', 'مشاهدات'), s.total_observations], [pick(lang, 'Entries / exits', 'ورودی / خروجی'), `${s.total_entries} / ${s.total_exits}`],
+                [pick(lang, 'Matched journeys', 'سفرهای منطبق'), s.matched_journeys], [pick(lang, 'Match rate (of entries)', 'نرخ انطباق (از ورودی‌ها)'), `${s.matching_rate_percent}%`],
+                [pick(lang, 'Ambiguous cases', 'موارد مبهم'), s.ambiguous_cases], [pick(lang, 'Unmatched entries / exits', 'ورودی / خروجی بدون جفت'), `${s.unmatched_entries} / ${s.unmatched_exits}`],
+                [pick(lang, 'Mean travel time', 'میانگین زمان سفر'), s.matched_journeys ? fmtDuration(s.mean_travel_time_sec) : '-'], [pick(lang, 'Supervisor-confirmed', 'تأییدشدهٔ سرپرست'), s.reviewed_journeys],
+              ].map(([k, v]) => <div key={String(k)}><p className="text-[11px] font-bold uppercase text-slate-500">{k}</p><p className="text-xl font-black font-mono">{v}</p></div>)}
+            </section>
 
-        {/* Executive Summary Metrics */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 p-5 rounded-2xl bg-slate-50 border border-slate-200">
-          <div>
-            <p className="text-[11px] font-bold uppercase text-slate-500">Total Observations</p>
-            <p className="text-2xl font-black font-mono text-slate-900 mt-0.5">
-              {matchingSummary?.total_observations || 0}
-            </p>
-            <p className="text-[10px] text-slate-500">Field events logged</p>
-          </div>
+            <section className="space-y-2">
+              <h2 className="text-sm font-black uppercase tracking-wider">{pick(lang, 'Table 1: Origin–Destination matrix (journeys)', 'جدول ۱: ماتریس مبدا-مقصد (سفر)')}</h2>
+              {od.origins.length === 0 ? <p className="text-xs text-slate-500">-</p> : (
+                <table className="w-full text-center border-collapse border border-slate-300 text-xs">
+                  <thead><tr className="bg-slate-100"><th className="border border-slate-300 p-2">O \ D</th>{od.destinations.map((d) => <th key={d} className="border border-slate-300 p-2 font-mono">{d}</th>)}<th className="border border-slate-300 p-2">{pick(lang, 'Total', 'جمع')}</th></tr></thead>
+                  <tbody>
+                    {od.origins.map((o) => <tr key={o}><td className="border border-slate-300 p-2 font-mono font-bold bg-slate-50">{o}</td>{od.destinations.map((d) => <td key={d} className="border border-slate-300 p-2 font-mono">{od.counts[o][d]}</td>)}<td className="border border-slate-300 p-2 font-mono font-bold">{od.row_totals[o]}</td></tr>)}
+                    <tr className="bg-slate-100"><td className="border border-slate-300 p-2 font-bold">{pick(lang, 'Total', 'جمع')}</td>{od.destinations.map((d) => <td key={d} className="border border-slate-300 p-2 font-mono font-bold">{od.col_totals[d]}</td>)}<td className="border border-slate-300 p-2 font-mono font-black">{od.grand_total}</td></tr>
+                  </tbody>
+                </table>
+              )}
+            </section>
 
-          <div>
-            <p className="text-[11px] font-bold uppercase text-slate-500">Matched Journeys</p>
-            <p className="text-2xl font-black font-mono text-emerald-600 mt-0.5">
-              {matchingSummary?.matched_journeys || 0}
-            </p>
-            <p className="text-[10px] text-slate-500">Verified OD pairs</p>
-          </div>
+            <section className="space-y-2">
+              <h2 className="text-sm font-black uppercase tracking-wider">{pick(lang, 'Table 2: Travel time statistics (seconds)', 'جدول ۲: آمار زمان سفر (ثانیه)')}</h2>
+              {st.count === 0 ? <p className="text-xs text-slate-500">-</p> : (
+                <table className="w-full text-center border-collapse border border-slate-300 text-xs">
+                  <thead><tr className="bg-slate-100">{['n', 'Mean', 'Median', 'Std dev', 'Min', 'Max', 'P15', 'P85', 'P95'].map((h) => <th key={h} className="border border-slate-300 p-2">{h}</th>)}</tr></thead>
+                  <tbody><tr className="font-mono">{[st.count, st.mean, st.median, st.std_dev, st.min, st.max, st.p15, st.p85, st.p95].map((v, i) => <td key={i} className="border border-slate-300 p-2">{v}</td>)}</tr></tbody>
+                </table>
+              )}
+            </section>
 
-          <div>
-            <p className="text-[11px] font-bold uppercase text-slate-500">Matching Rate</p>
-            <p className="text-2xl font-black font-mono text-teal-600 mt-0.5">
-              {matchingSummary?.matching_rate_percent || 0}%
-            </p>
-            <p className="text-[10px] text-slate-500">Of entry cordon volume</p>
-          </div>
-
-          <div>
-            <p className="text-[11px] font-bold uppercase text-slate-500">Mean Travel Time</p>
-            <p className="text-2xl font-black font-mono text-slate-900 mt-0.5">
-              {matchingSummary?.mean_travel_time_sec || 0}s
-            </p>
-            <p className="text-[10px] text-slate-500">
-              ({((matchingSummary?.mean_travel_time_sec || 0) / 60).toFixed(1)} mins)
-            </p>
-          </div>
-        </div>
-
-        {/* Origin-Destination Trip Table */}
-        <div className="space-y-3">
-          <h3 className="text-sm font-black uppercase tracking-wider text-slate-800 flex items-center gap-2">
-            <Layers className="w-4 h-4 text-emerald-600" />
-            <span>Table 1: Origin–Destination Trip Demand Matrix</span>
-          </h3>
-
-          {odMatrix ? (
-            <div className="overflow-x-auto">
-              <table className="w-full text-center border-collapse border border-slate-300 text-xs">
-                <thead>
-                  <tr className="bg-slate-100">
-                    <th className="p-2.5 border border-slate-300 font-black text-left">Origin \ Destination</th>
-                    {odMatrix.destinations.map((d) => (
-                      <th key={d} className="p-2.5 border border-slate-300 font-black font-mono">
-                        {d}
-                      </th>
-                    ))}
-                    <th className="p-2.5 border border-slate-300 font-black bg-slate-200">Total Origin</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {odMatrix.origins.map((orig) => (
-                    <tr key={orig} className="hover:bg-slate-50">
-                      <td className="p-2 border border-slate-300 font-bold font-mono text-left bg-slate-50">
-                        {orig}
-                      </td>
-                      {odMatrix.destinations.map((d) => (
-                        <td key={d} className="p-2 border border-slate-300 font-mono font-bold">
-                          {odMatrix.counts[orig]?.[d] || 0}
-                          <span className="text-[10px] text-slate-400 font-normal ml-1">
-                            ({odMatrix.percentages[orig]?.[d] || 0}%)
-                          </span>
-                        </td>
-                      ))}
-                      <td className="p-2 border border-slate-300 font-mono font-black bg-slate-100">
-                        {odMatrix.row_totals[orig] || 0}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-                <tfoot>
-                  <tr className="bg-slate-100 font-black">
-                    <td className="p-2.5 border border-slate-300 text-left">Total Destination</td>
-                    {odMatrix.destinations.map((d) => (
-                      <td key={d} className="p-2.5 border border-slate-300 font-mono">
-                        {odMatrix.col_totals[d] || 0}
-                      </td>
-                    ))}
-                    <td className="p-2.5 border border-slate-300 font-mono text-emerald-700 bg-emerald-50">
-                      {odMatrix.grand_total}
-                    </td>
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
-          ) : (
-            <p className="text-xs text-slate-500">Run matching engine to generate table.</p>
-          )}
-        </div>
-
-        {/* Travel Time Statistical Percentiles Table */}
-        <div className="space-y-3">
-          <h3 className="text-sm font-black uppercase tracking-wider text-slate-800 flex items-center gap-2">
-            <Clock className="w-4 h-4 text-emerald-600" />
-            <span>Table 2: Travel Time & Speed Variance Statistics</span>
-          </h3>
-
-          {travelTimeStats && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse border border-slate-300 text-xs">
-                <thead className="bg-slate-100">
-                  <tr>
-                    <th className="p-2.5 border border-slate-300 font-black">Metric</th>
-                    <th className="p-2.5 border border-slate-300 font-black">Calculated Value</th>
-                    <th className="p-2.5 border border-slate-300 font-black">Transportation Engineering Significance</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200 font-mono">
-                  <tr>
-                    <td className="p-2 border border-slate-300 font-bold">15th Percentile (P15)</td>
-                    <td className="p-2 border border-slate-300 font-bold text-teal-600">{travelTimeStats.p15} sec</td>
-                    <td className="p-2 border border-slate-300 font-sans text-slate-600">Free-flow uncongested travel time threshold</td>
-                  </tr>
-                  <tr>
-                    <td className="p-2 border border-slate-300 font-bold">50th Percentile (Median)</td>
-                    <td className="p-2 border border-slate-300 font-bold text-slate-800">{travelTimeStats.median} sec</td>
-                    <td className="p-2 border border-slate-300 font-sans text-slate-600">Typical trip travel time</td>
-                  </tr>
-                  <tr>
-                    <td className="p-2 border border-slate-300 font-bold">85th Percentile (P85)</td>
-                    <td className="p-2 border border-slate-300 font-bold text-amber-600">{travelTimeStats.p85} sec</td>
-                    <td className="p-2 border border-slate-300 font-sans text-slate-600">Standard design speed and operational performance index</td>
-                  </tr>
-                  <tr>
-                    <td className="p-2 border border-slate-300 font-bold">95th Percentile (P95)</td>
-                    <td className="p-2 border border-slate-300 font-bold text-rose-600">{travelTimeStats.p95} sec</td>
-                    <td className="p-2 border border-slate-300 font-sans text-slate-600">Severe delay and incident clearance boundary</td>
-                  </tr>
-                  <tr>
-                    <td className="p-2 border border-slate-300 font-bold">Standard Deviation (σ)</td>
-                    <td className="p-2 border border-slate-300 font-bold text-slate-800">{travelTimeStats.std_dev} sec</td>
-                    <td className="p-2 border border-slate-300 font-sans text-slate-600">Travel time reliability metric</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-
-        {/* Signoff & Quality Assurance */}
-        <div className="pt-6 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center sm:justify-between text-xs text-slate-500 gap-4">
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="w-4 h-4 text-emerald-600" />
-            <span>Quality Control Certified: All timestamps verified against immutable event log.</span>
-          </div>
-          <div className="text-right font-mono text-[11px]">
-            Certified by: {study?.supervisor_name}
-          </div>
-        </div>
-      </div>
+            {report.analytics.route_speeds.length > 0 && (
+              <section className="space-y-2">
+                <h2 className="text-sm font-black uppercase tracking-wider">{pick(lang, 'Table 3: Average journey speed by route', 'جدول ۳: سرعت متوسط سیر به تفکیک مسیر')}</h2>
+                <table className="w-full text-center border-collapse border border-slate-300 text-xs">
+                  <thead><tr className="bg-slate-100"><th className="border border-slate-300 p-2">Route</th><th className="border border-slate-300 p-2">m</th><th className="border border-slate-300 p-2">n</th><th className="border border-slate-300 p-2">km/h</th></tr></thead>
+                  <tbody>{report.analytics.route_speeds.map((r) => <tr key={r.route} className="font-mono"><td className="border border-slate-300 p-2">{r.route}</td><td className="border border-slate-300 p-2">{r.distance_m}</td><td className="border border-slate-300 p-2">{r.journeys}</td><td className="border border-slate-300 p-2">{r.mean_journey_speed_kmh}</td></tr>)}</tbody>
+                </table>
+              </section>
+            )}
+            <p className="text-[11px] text-slate-500 border-t pt-3">{s.method_note}</p>
+          </>
+        )}
+      </article>
     </div>
   );
 };

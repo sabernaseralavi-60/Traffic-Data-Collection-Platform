@@ -1,128 +1,30 @@
-# REST API Specification
-**Project:** TrafficLab – Smart Traffic Data Collection Platform  
-**Document ID:** API-2026-001  
-**Base URL:** `/api/v1`  
+# API specification (v1)
 
----
+Base path `/api/v1`, JSON, cookie session (`tl_session`, HttpOnly). All writes need the header `X-TL-CSRF: 1`.
+Errors: `{ "error": "...", "code": "..." }` (validation errors add `issues: [{path, message}]`). Roles: A = ADMIN, S = SUPERVISOR, O = OBSERVER.
 
-## 1. Authentication & Session
+| Method and path | Role | Purpose |
+|---|---|---|
+| `POST /auth/login` | public (30/15 min/IP, lockout after 5 failures) | `{username,password}` -> sets cookie |
+| `POST /auth/logout` | any | clears cookie |
+| `GET /auth/me` | any | user + own assignments |
+| `POST /auth/change-password` | any | `{current_password,new_password}` |
+| `GET/POST /users`, `PATCH /users/:id` | A (GET also S: observers only) | accounts, activate, reset password, role |
+| `GET /categories`, `POST /categories`, `PATCH /categories/:code` | any / A / A | configurable vehicle categories |
+| `GET /studies`, `POST /studies` | any (observer: assigned only) / A | list, create |
+| `GET/PATCH/DELETE /studies/:id` | visible / A / A | detail (points, routes, assignments), update (incl. schematic image data URL, PNG/JPG/SVG <= 1 MB), delete (no data unless demo) |
+| `PUT /studies/:id/points` | A | points + route distances (points in use cannot be removed or change type) |
+| `PUT /studies/:id/assignments` | A | observer -> point (+ optional period) |
+| `POST /observations` | O | record one observation (point/observer from assignment) |
+| `POST /observations/batch-sync` | O | up to 500; response lists every item: `created`, `duplicate` or `rejected` + reason |
+| `GET /studies/:id/observations` | visible (observer: own) | non-voided observations |
+| `POST /observations/:id/void` | O own within 10 min, A/S any | soft delete (event kept, who/when/why stored) |
+| `POST /studies/:id/match` | A, S | engine report: summary, matches, ambiguous, unmatched, OD, travel-time stats, route speeds, counts. Body: travel-time window, `strict_category_match`, `interval_minutes`, `filters {from,to,categories,points}` |
+| `POST /studies/:id/reviews` | A, S | `{entry_observation_id, exit_observation_id, decision: REVIEWED\|REJECTED\|CLEAR, note}` |
+| `GET /studies/:id/export.csv`, `export.xlsx` | A, S | validated records (query: `min`,`max`,`strict`,`interval`) |
+| `POST /studies/:id/seed-scenario` | A | reset the synthetic DEMO study only |
+| `GET /audit` | A | audit log |
+| `GET /healthz` (no prefix) | public | database + engine status |
 
-### `POST /api/v1/auth/login`
-- **Request Body:**
-  ```json
-  {
-    "username": "observer01",
-    "password": "password123"
-  }
-  ```
-- **Response 200 OK:**
-  ```json
-  {
-    "token": "tl_session_token_xyz",
-    "user": {
-      "id": "u-01",
-      "username": "observer01",
-      "full_name": "Reza Rahmani",
-      "role": "OBSERVER",
-      "active_assignment": {
-        "study_id": "study-01",
-        "study_name": "Azadi Intersection Network",
-        "point_code": "E01",
-        "point_type": "ENTRY",
-        "description": "Northern Inbound Gate"
-      }
-    }
-  }
-  ```
-
----
-
-## 2. Studies & Schematic Points
-
-### `GET /api/v1/studies`
-- Lists all studies with supervisor and point counts.
-
-### `GET /api/v1/studies/:id`
-- Returns full details including observation points, assigned observers, and route distance matrix.
-
-### `POST /api/v1/studies`
-- Creates a new study with dates, time windows, and initial points.
-
-### `PUT /api/v1/studies/:id/points`
-- Updates schematic points coordinates $(x\%, y\%)$, code, type (`ENTRY`/`EXIT`), and route distances.
-
----
-
-## 3. Observations & Sync
-
-### `POST /api/v1/observations`
-- Records a single live observation from the field observer.
-- **Request Body:**
-  ```json
-  {
-    "study_id": "study-01",
-    "point_code": "E01",
-    "point_type": "ENTRY",
-    "plate_suffix": "387",
-    "vehicle_category": "CAR",
-    "observation_timestamp": "2026-10-30T08:15:10Z",
-    "idempotency_key": "obs-e01-387-1730276110000"
-  }
-  ```
-- **Response 201 Created / 200 OK (Idempotent):**
-  ```json
-  {
-    "status": "success",
-    "observation": {
-      "id": "obs-uuid-1",
-      "plate_suffix": "387",
-      "point_code": "E01",
-      "point_type": "ENTRY",
-      "timestamp": "2026-10-30T08:15:10Z"
-    }
-  }
-  ```
-
-### `POST /api/v1/observations/batch-sync`
-- Synchronizes buffered offline observations from client IndexedDB.
-- Accepts an array of observations; applies transaction-level deduplication via `idempotency_key`.
-
----
-
-## 4. Vehicle Matching Engine & Analytics (Python Powered)
-
-### `POST /api/v1/studies/:id/match`
-- Invokes Python matching engine on all study observations.
-- **Query / Body Parameters:**
-  - `min_travel_time_sec`: Minimum valid travel time (default: 30s)
-  - `max_travel_time_sec`: Maximum valid travel time (default: 900s)
-  - `strict_category_match`: Boolean (default: false)
-- **Response 200 OK:**
-  ```json
-  {
-    "summary": {
-      "total_entries": 120,
-      "total_exits": 115,
-      "matched_journeys": 98,
-      "ambiguous_matches": 4,
-      "unmatched_entries": 18,
-      "unmatched_exits": 13,
-      "matching_rate_percent": 81.67,
-      "mean_travel_time_sec": 242.5,
-      "median_travel_time_sec": 235.0
-    },
-    "matches": [ ... ],
-    "ambiguous": [ ... ]
-  }
-  ```
-
-### `GET /api/v1/studies/:id/od-matrix`
-- Calculates the Origin-Destination matrix between all ENTRY points and EXIT points.
-- Supports filtering by `category`, `start_time`, `end_time`.
-
-### `GET /api/v1/studies/:id/travel-times`
-- Returns descriptive statistics (mean, median, standard deviation, min, max, 15th, 85th, 95th percentiles) and speed distribution.
-
-### `GET /api/v1/studies/:id/export`
-- Formats: `format=csv`, `format=excel`, or `format=json`.
-- Streams validated structured file download.
+Rejection codes for observations: `invalid_suffix`, `not_assigned`, `wrong_point`, `point_required`, `study_not_active`,
+`future_timestamp`, `outside_period`.

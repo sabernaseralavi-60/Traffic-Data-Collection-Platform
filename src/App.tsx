@@ -1,333 +1,211 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Navbar } from './components/Navbar';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { api, ApiError, download, errorText } from './api';
+import { Navbar, TabId } from './components/Navbar';
+import { LoginView } from './components/LoginView';
 import { DashboardView } from './components/DashboardView';
 import { FieldCollector } from './components/FieldCollector';
-import { SchematicMapEditor } from './components/SchematicMapEditor';
+import { StudySetup } from './components/StudySetup';
 import { MatchingView } from './components/MatchingView';
 import { ODMatrixView } from './components/ODMatrixView';
-import { ObserverManagement } from './components/ObserverManagement';
+import { AccountsView } from './components/AccountsView';
 import { ReportsView } from './components/ReportsView';
 import { KermanManualView } from './components/KermanManualView';
-import { User, Study, VehicleObservation, ODMatrixData, TravelTimeStats, CategorySplit, MatchingSummary } from './types';
-import { Language, getT } from './i18n';
-import {
-  getPendingObservations,
-  markObservationsSynced,
-  getQueueStatus,
-  QueuedObservation
-} from './utils/offlineQueue';
+import { Assignment, Category, Report, Study, StudySummary, User, VehicleObservation } from './types';
+import { Language, getT, pick } from './i18n';
+import { applySyncResults, getPendingObservations, getQueuedForUser, getQueueStatus, QueuedObservation, SyncResult } from './utils/offlineQueue';
+
+const TABS: Record<User['role'], TabId[]> = {
+  ADMIN: ['dashboard', 'studies', 'matching', 'od_matrix', 'accounts', 'reports', 'kerman_manual'],
+  SUPERVISOR: ['dashboard', 'matching', 'od_matrix', 'reports', 'kerman_manual'],
+  OBSERVER: ['collector', 'kerman_manual'],
+};
 
 export default function App() {
-  const [lang, setLang] = useState<Language>('en');
-  const [activeTab, setActiveTab] = useState<string>('dashboard');
+  const [lang, setLangState] = useState<Language>(() => (localStorage.getItem('tl_lang') === 'fa' ? 'fa' : 'en'));
+  const setLang = (l: Language) => { localStorage.setItem('tl_lang', l); setLangState(l); };
+  const [boot, setBoot] = useState<'loading' | 'ready'>('loading');
+  const [user, setUser] = useState<User | null>(null);
+  const [assignments, setAssignments] = useState<Assignment[]>([]);
+  const [loginNotice, setLoginNotice] = useState<string | null>(null);
+  const [tab, setTab] = useState<TabId>('dashboard');
 
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [allUsers, setAllUsers] = useState<User[]>([]);
-  const [activeStudy, setActiveStudy] = useState<Study | null>(null);
+  const [studies, setStudies] = useState<StudySummary[]>([]);
+  const [studyId, setStudyId] = useState<string | null>(null);
+  const [study, setStudy] = useState<Study | null>(null);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [observations, setObservations] = useState<VehicleObservation[]>([]);
+  const [report, setReport] = useState<Report | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  // Analytics & Matching data computed by Python engine
-  const [matchingSummary, setMatchingSummary] = useState<MatchingSummary | null>(null);
-  const [odMatrix, setOdMatrix] = useState<ODMatrixData | null>(null);
-  const [travelTimeStats, setTravelTimeStats] = useState<TravelTimeStats | null>(null);
-  const [categorySplit, setCategorySplit] = useState<CategorySplit | null>(null);
+  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [queued, setQueued] = useState<QueuedObservation[]>([]);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [errorCount, setErrorCount] = useState(0);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const syncLock = useRef(false);
+  const t = getT(lang);
 
-  // Connectivity & Sync state
-  const [isOnline, setIsOnline] = useState<boolean>(
-    typeof navigator !== 'undefined' ? navigator.onLine : true
-  );
-  const [pendingSyncCount, setPendingSyncCount] = useState<number>(0);
-  const [isSyncing, setIsSyncing] = useState<boolean>(false);
-  const [isSeeding, setIsSeeding] = useState<boolean>(false);
-
-  // Manage document direction & font when language flips
   useEffect(() => {
     document.documentElement.dir = lang === 'fa' ? 'rtl' : 'ltr';
     document.documentElement.lang = lang;
   }, [lang]);
 
-  // Network online/offline event listeners
-  useEffect(() => {
-    const handleOnline = () => {
-      setIsOnline(true);
-      triggerBatchSync();
-    };
-    const handleOffline = () => setIsOnline(false);
+  const refreshQueue = useCallback(async (u: User | null = user) => {
+    if (!u) { setQueued([]); setPendingCount(0); setErrorCount(0); return; }
+    const [items, status] = await Promise.all([getQueuedForUser(u.id), getQueueStatus(u.id)]);
+    setQueued(items);
+    setPendingCount(status.pending);
+    setErrorCount(status.errors);
+  }, [user]);
 
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-  }, []);
-
-  // Fetch initial session, studies, and observations
-  const loadInitialData = async () => {
+  const loadStudyData = useCallback(async (id: string, u: User) => {
     try {
-      // Load current user
-      const userRes = await fetch('/api/v1/auth/me');
-      if (userRes.ok) {
-        const uData = await userRes.json();
-        setCurrentUser(uData.user);
-        setAllUsers(uData.allUsers || []);
-      }
-
-      // Load studies
-      const studiesRes = await fetch('/api/v1/studies');
-      if (studiesRes.ok) {
-        const sData = await studiesRes.json();
-        if (sData.length > 0) {
-          const study = sData[0];
-          setActiveStudy(study);
-
-          // Load observations for active study
-          const obsRes = await fetch(`/api/v1/studies/${study.id}/observations`);
-          if (obsRes.ok) {
-            const obsData = await obsRes.json();
-            setObservations(obsData);
-          }
-
-          // Trigger matching run to initialize analytics
-          const matchRes = await fetch(`/api/v1/studies/${study.id}/match`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ min_travel_time_sec: 30, max_travel_time_sec: 900 }),
-          });
-          if (matchRes.ok) {
-            const mData = await matchRes.json();
-            setMatchingSummary(mData.summary);
-            if (mData.analytics) {
-              setOdMatrix(mData.analytics.od_matrix);
-              setTravelTimeStats(mData.analytics.travel_time_stats);
-              setCategorySplit(mData.analytics.vehicle_category_split);
-            }
-          }
-        }
-      }
+      setLoadError(null);
+      const s = await api<Study>('GET', `/studies/${id}`);
+      setStudy(s);
+      setObservations(await api<VehicleObservation[]>('GET', `/studies/${id}/observations`));
+      if (u.role !== 'OBSERVER') setReport(await api<Report>('POST', `/studies/${id}/match`, {}));
+      else setReport(null);
     } catch (err) {
-      console.warn('Initial data load error:', err);
-    }
-  };
-
-  const refreshQueueStatus = useCallback(async () => {
-    try {
-      const status = await getQueueStatus();
-      setPendingSyncCount(status.pending);
-    } catch (e) {
-      console.error(e);
+      if (!(err instanceof ApiError && err.status === 401)) setLoadError(errorText(err));
     }
   }, []);
 
-  useEffect(() => {
-    loadInitialData();
-    refreshQueueStatus();
-  }, [refreshQueueStatus]);
+  const loadSession = useCallback(async (u: User, asg: Assignment[]) => {
+    setUser(u);
+    setAssignments(asg);
+    setTab(TABS[u.role][0]);
+    try {
+      const [cats, list] = await Promise.all([api<Category[]>('GET', '/categories'), api<StudySummary[]>('GET', '/studies')]);
+      setCategories(cats);
+      setStudies(list);
+      const saved = localStorage.getItem('tl_study');
+      const pick0 = list.find((s) => s.id === saved) ?? list.find((s) => s.status === 'ACTIVE') ?? list[0];
+      setStudyId(pick0?.id ?? null);
+      if (pick0) await loadStudyData(pick0.id, u);
+    } catch (err) {
+      setLoadError(errorText(err));
+    }
+    await refreshQueue(u);
+  }, [loadStudyData, refreshQueue]);
 
-  // Batch sync offline queued records with server
-  const triggerBatchSync = async () => {
-    if (isSyncing) return;
+  // initial session probe: exactly once (re-running it on every user change reset the tab and flooded the API)
+  const probed = useRef(false);
+  useEffect(() => {
+    if (probed.current) return;
+    probed.current = true;
+    (async () => {
+      try {
+        const me = await api<{ user: User; assignments: Assignment[] }>('GET', '/auth/me');
+        await loadSession(me.user, me.assignments);
+      } catch { /* not signed in */ }
+      setBoot('ready');
+    })();
+  }, [loadSession]);
+
+  useEffect(() => {
+    const expired = () => { setUser(null); setLoginNotice(pick(lang, 'Your session ended. Sign in again - anything saved on this device is kept.', 'نشست شما پایان یافت. دوباره وارد شوید؛ داده‌های ذخیره‌شده روی این دستگاه حفظ می‌شود.')); };
+    window.addEventListener('tl:unauthenticated', expired);
+    return () => window.removeEventListener('tl:unauthenticated', expired);
+  }, [lang]);
+
+  const syncNow = useCallback(async () => {
+    if (!user || user.role !== 'OBSERVER' || syncLock.current || !navigator.onLine) return;
+    syncLock.current = true;
     setIsSyncing(true);
     try {
-      const pending: QueuedObservation[] = await getPendingObservations();
-      if (pending.length > 0) {
-        const res = await fetch('/api/v1/observations/batch-sync', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ observations: pending }),
-        });
-
-        if (res.ok) {
-          const ids = pending.map((p) => p.id);
-          await markObservationsSynced(ids);
-          await refreshQueueStatus();
-
-          // Refresh study observations
-          if (activeStudy) {
-            const obsRes = await fetch(`/api/v1/studies/${activeStudy.id}/observations`);
-            if (obsRes.ok) {
-              const obsData = await obsRes.json();
-              setObservations(obsData);
-            }
-          }
-        }
+      const pending = await getPendingObservations(user.id);
+      for (let i = 0; i < pending.length; i += 200) {
+        const chunk = pending.slice(i, i + 200);
+        const body = chunk.map((p) => ({ study_id: p.study_id, point_code: p.point_code, plate_suffix: p.plate_suffix, vehicle_category: p.vehicle_category, observed_at: p.observation_timestamp, idempotency_key: p.idempotency_key }));
+        const res = await api<{ results: SyncResult[] }>('POST', '/observations/batch-sync', { observations: body });
+        await applySyncResults(user.id, res.results); // only accepted items become SYNCED; refused ones stay visible as ERROR
       }
     } catch (err) {
-      console.error('Batch sync failed:', err);
+      console.warn('sync failed, will retry:', err);
     } finally {
+      syncLock.current = false;
       setIsSyncing(false);
+      await refreshQueue();
+      if (studyId) setObservations(await api<VehicleObservation[]>('GET', `/studies/${studyId}/observations`).catch(() => observations));
     }
+  }, [user, studyId, refreshQueue, observations]);
+
+  useEffect(() => {
+    const on = () => { setIsOnline(true); void syncNow(); };
+    const off = () => setIsOnline(false);
+    window.addEventListener('online', on);
+    window.addEventListener('offline', off);
+    return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); };
+  }, [syncNow]);
+
+  useEffect(() => {
+    if (!user || pendingCount === 0 || !isOnline) return;
+    const id = setInterval(() => void syncNow(), 30_000);
+    return () => clearInterval(id);
+  }, [user, pendingCount, isOnline, syncNow]);
+
+  useEffect(() => { if (user && pendingCount > 0 && isOnline) void syncNow(); }, [user]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const logout = async () => {
+    try { await api('POST', '/auth/logout', {}); } catch { /* cookie is cleared locally by expiry */ }
+    setUser(null); setStudy(null); setStudies([]); setStudyId(null); setObservations([]); setReport(null); setAssignments([]); setLoginNotice(null);
+    await refreshQueue(null);
   };
 
-  const handleSwitchUser = async (userId: string) => {
-    try {
-      const res = await fetch('/api/v1/auth/switch-user', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setCurrentUser(data.user);
-      }
-    } catch (err) {
-      console.error('Failed to switch user:', err);
-    }
+  const selectStudy = async (id: string) => {
+    setStudyId(id);
+    localStorage.setItem('tl_study', id);
+    if (user) await loadStudyData(id, user);
   };
 
-  const handleObservationAdded = (obs: VehicleObservation) => {
-    setObservations((prev) => [obs, ...prev]);
+  const reloadStudies = async () => {
+    const list = await api<StudySummary[]>('GET', '/studies');
+    setStudies(list);
+    return list;
   };
+  const refreshCurrent = async () => { if (user && studyId) await loadStudyData(studyId, user); };
 
-  const handleDeleteObservation = async (id: string) => {
-    try {
-      const res = await fetch(`/api/v1/observations/${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        setObservations((prev) => prev.filter((o) => o.id !== id));
-      }
-    } catch (err) {
-      console.error('Failed to delete observation:', err);
-    }
-  };
+  const myAssignments = useMemo(() => assignments.filter((a) => a.study_id === studyId), [assignments, studyId]);
+  const mine = useMemo(() => observations.filter((o) => user && o.observer_id === user.id), [observations, user]);
 
-  const handleResetSeedData = async () => {
-    if (!activeStudy) return;
-    setIsSeeding(true);
-    try {
-      const res = await fetch(`/api/v1/studies/${activeStudy.id}/seed-scenario`, {
-        method: 'POST',
-      });
-      if (res.ok) {
-        await loadInitialData();
-      }
-    } catch (err) {
-      console.error('Failed to reset seed data:', err);
-    } finally {
-      setIsSeeding(false);
-    }
-  };
+  if (boot === 'loading') return <div className="min-h-screen bg-slate-950 text-slate-400 flex items-center justify-center text-sm" role="status">…</div>;
+  if (!user) {
+    return <LoginView lang={lang} setLang={setLang} notice={loginNotice} onLoggedIn={async (u) => {
+      const me = await api<{ user: User; assignments: Assignment[] }>('GET', '/auth/me');
+      setLoginNotice(null);
+      await loadSession(u, me.assignments);
+    }} />;
+  }
 
-  const handleMatchesComputed = (data: any) => {
-    setMatchingSummary(data.summary);
-    if (data.analytics) {
-      setOdMatrix(data.analytics.od_matrix);
-      setTravelTimeStats(data.analytics.travel_time_stats);
-      setCategorySplit(data.analytics.vehicle_category_split);
-    }
-  };
-
-  const handleExportCSV = () => {
-    if (!activeStudy) return;
-    window.location.href = `/api/v1/studies/${activeStudy.id}/export`;
-  };
+  const tabs = TABS[user.role];
+  const activeTab = tabs.includes(tab) ? tab : tabs[0];
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-teal-500 selection:text-slate-950">
-      {/* Top Application Navbar */}
-      <Navbar
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        lang={lang}
-        setLang={setLang}
-        currentUser={currentUser}
-        allUsers={allUsers}
-        onSwitchUser={handleSwitchUser}
-        activeStudy={activeStudy}
-        isOnline={isOnline}
-        pendingSyncCount={pendingSyncCount}
-        onSyncNow={triggerBatchSync}
-        isSyncing={isSyncing}
-      />
+      <Navbar tabs={tabs} activeTab={activeTab} setActiveTab={setTab} lang={lang} setLang={setLang} user={user} onLogout={logout}
+        studies={studies} studyId={studyId} onSelectStudy={selectStudy} isOnline={isOnline} pendingCount={pendingCount} errorCount={errorCount} onSyncNow={syncNow} isSyncing={isSyncing} />
 
-      {/* Main View Router */}
+      {study?.is_demo && (
+        <div className="bg-fuchsia-950/60 border-b border-fuchsia-800/50 text-fuchsia-200 text-xs text-center py-1.5 px-3 print:hidden" data-testid="demo-banner">
+          {pick(lang, 'DEMO study: synthetic data for demonstration, not real observations.', 'طرح نمایشی: داده‌های ساختگی برای نمایش، نه مشاهدات واقعی.')}
+        </div>
+      )}
+      {loadError && <div role="alert" className="bg-rose-950/60 border-b border-rose-800/60 text-rose-200 text-xs text-center py-1.5 px-3">{loadError}</div>}
+
       <main className="flex-1 pb-16">
-        {activeTab === 'dashboard' && (
-          <DashboardView
-            study={activeStudy}
-            lang={lang}
-            currentUser={currentUser}
-            observations={observations}
-            setActiveTab={setActiveTab}
-            onResetSeedData={handleResetSeedData}
-            isSeeding={isSeeding}
-          />
-        )}
-
-        {activeTab === 'collector' && (
-          <FieldCollector
-            currentUser={currentUser}
-            activeStudy={activeStudy}
-            lang={lang}
-            onObservationAdded={handleObservationAdded}
-            recentObservations={observations}
-            onDeleteObservation={handleDeleteObservation}
-            isOnline={isOnline}
-            onRefreshQueue={refreshQueueStatus}
-          />
-        )}
-
-        {activeTab === 'map' && (
-          <SchematicMapEditor
-            study={activeStudy}
-            lang={lang}
-            onUpdateStudy={(updated) => setActiveStudy(updated)}
-          />
-        )}
-
-        {activeTab === 'matching' && (
-          <MatchingView
-            study={activeStudy}
-            lang={lang}
-            onMatchesComputed={handleMatchesComputed}
-            onExportReport={handleExportCSV}
-          />
-        )}
-
-        {activeTab === 'od_matrix' && (
-          <ODMatrixView
-            study={activeStudy}
-            lang={lang}
-            odMatrix={odMatrix}
-            travelTimeStats={travelTimeStats}
-            categorySplit={categorySplit}
-            onExportReport={handleExportCSV}
-          />
-        )}
-
-        {activeTab === 'observers' && (
-          <ObserverManagement
-            users={allUsers}
-            activeStudy={activeStudy}
-            lang={lang}
-            currentUser={currentUser}
-            onSwitchUser={handleSwitchUser}
-          />
-        )}
-
-        {activeTab === 'reports' && (
-          <ReportsView
-            study={activeStudy}
-            lang={lang}
-            odMatrix={odMatrix}
-            travelTimeStats={travelTimeStats}
-            matchingSummary={matchingSummary}
-          />
-        )}
-
-        {activeTab === 'kerman_manual' && (
-          <KermanManualView lang={lang} />
-        )}
+        {activeTab === 'dashboard' && <DashboardView study={study} lang={lang} user={user} report={report} observationCount={observations.length} setActiveTab={setTab} onDemoReset={async () => { if (study) { await api('POST', `/studies/${study.id}/seed-scenario`, {}); await refreshCurrent(); } }} />}
+        {activeTab === 'collector' && <FieldCollector user={user} study={study} assignments={myAssignments} categories={categories} lang={lang} isOnline={isOnline} serverObservations={mine} queued={queued.filter((q) => q.study_id === studyId)} onChanged={async () => { await refreshQueue(); if (studyId) setObservations(await api<VehicleObservation[]>('GET', `/studies/${studyId}/observations`).catch(() => observations)); }} />}
+        {activeTab === 'studies' && <StudySetup lang={lang} study={study} studies={studies} onChanged={async (id) => { const list = await reloadStudies(); const target = id ?? studyId ?? list[0]?.id; if (target) { setStudyId(target); localStorage.setItem('tl_study', target); await loadStudyData(target, user); } }} />}
+        {activeTab === 'matching' && <MatchingView study={study} lang={lang} categories={categories} initial={report} onReport={setReport} />}
+        {activeTab === 'od_matrix' && <ODMatrixView study={study} lang={lang} report={report} />}
+        {activeTab === 'accounts' && <AccountsView lang={lang} currentUser={user} categories={categories} onCategoriesChanged={async () => setCategories(await api<Category[]>('GET', '/categories'))} />}
+        {activeTab === 'reports' && <ReportsView study={study} lang={lang} report={report} />}
+        {activeTab === 'kerman_manual' && <KermanManualView lang={lang} />}
       </main>
 
-      {/* Footer */}
       <footer className="border-t border-slate-900 bg-slate-950/80 py-4 px-6 text-center text-xs text-slate-500 print:hidden">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
-          <p>TrafficLab – Modular Field Data Collection Platform for Transportation Engineering</p>
-          <p className="font-mono text-[11px] text-slate-600">
-            Python 3.10 Engine • Deterministic Temporal Matching • FHWA TMG 2022 Compliant
-          </p>
-        </div>
+        {t.app_title} - {pick(lang, 'Field data collection for transportation studies. Matching results are probable journeys, not certainties.', 'جمع‌آوری میدانی داده برای مطالعات حمل‌ونقل. نتایج انطباق، سفرهای محتمل‌اند، نه قطعی.')}
       </footer>
     </div>
   );

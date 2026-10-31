@@ -1,43 +1,29 @@
-# Implementation Roadmap
-**Project:** TrafficLab – Smart Traffic Data Collection Platform  
-**Document ID:** RDM-2026-001  
+# Status and roadmap
 
----
+Status of each part of the specification, after the audit and rebuild (2026-10-31). "Tested" means an automated test
+in this repository exercises it (`npm test`, `npm run e2e`); the audit trail is in `docs/factory/`.
 
-## Roadmap Phases
+| Spec item | Status | Evidence / limit |
+|---|---|---|
+| Accounts, RBAC, secure auth, audit log | Done, tested | API tests: role matrix replay, lockout, tampered cookie, CSRF header |
+| Study + points + schematic upload + route distances | Done, tested | API + browser test; image types PNG/JPG/SVG <= 1 MB, stored in the database |
+| Observer assignment (point, optional period) | Done, tested | forged point/observer rejected; period slack 5 min |
+| Mobile recording (keypad, voice, categories, duplicates, immutable events) | Done, tested (voice: Web Speech API only where the browser supports it; not testable headless) | exactly 3 digits; undo = soft delete |
+| Offline-first + sync + PWA shell | Done, tested | browser test: offline record, auto sync, offline shell reload; items are per-user, per-item results |
+| Matching engine (Python), ambiguity, review (REVIEWED/REJECTED) | Done, tested | 28 Python tests + API/browser tests; heuristic score, not a probability |
+| OD matrix, travel time stats, speed, counts by point/category/interval, filters | Done, tested | filters: time window, categories (point filter exists in the engine, no UI) |
+| Dashboard KPIs and charts | Done (simple SVG/CSS bars) | volume per interval, categories, points; OD heatmap on its page |
+| Export Excel, CSV | Done, tested | XLSX has 7 sheets; CSV neutralises formula injection |
+| Export PDF | Partial | browser *Print / Save as PDF* of the report page; no server-side PDF |
+| PostgreSQL + migrations + synthetic seed | Done, tested on embedded Postgres (PGlite) | **not yet run against Neon**; own migration runner instead of Alembic |
+| Retention periods | Done (daily/6-hourly job), unit-level only | no automated test of the purge job |
+| Concurrency | Partial | idempotent inserts and unique keys; no load test |
+| Deployment | Dockerfile + CI prepared | see DEPLOY.md; live URL recorded in `docs/factory/VERIFIED.md` once deployed |
+| Plugin architecture for other surveys | Not implemented | extension points described in ARCHITECTURE.md |
+| Interactive map (OpenStreetMap/Leaflet) | Not implemented (spec: future) | |
 
-1. **Phase 1: Analytical Core in Python**
-   - Implement `backend/trafficlab_engine.py` using Python 3.10 standard library.
-   - Algorithms: Partial plate matching, time feasibility window, ambiguity resolution, OD matrix formulation, travel time & speed statistics, Excel/CSV export.
-   - Comprehensive unit test suite in `backend/tests/test_matching.py`.
-
-2. **Phase 2: Full-Stack Gateway & Express Server**
-   - Express backend (`server.ts`) exposing `/api/v1/*` endpoints.
-   - In-memory & JSON file persistent store with complete pre-seeded realistic scenario:
-     - Study "Azadi Corridor Study" with E01, E02, X01, X02.
-     - Observers Observer 1 (at E01) and Observer 2 (at X01).
-     - Distance matrix between E01-X01, E01-X02, E02-X01, E02-X02.
-   - Child process execution bridge to `trafficlab_engine.py` for all calculations.
-
-3. **Phase 3: High-Speed Mobile Data Collection Client**
-   - Large digit pad (0-9, Backspace, Clear) for instant 1-2 second observation entry.
-   - Persian speech recognition parser (`fa-IR`) normalizing spoken number words ("سه هشت هفت" $\rightarrow$ "387").
-   - Vehicle category selector (Car, Taxi, Pickup, Motorcycle, Van, Bus, Light Truck, Heavy Truck, Other).
-   - Duplicate prevention (client-side lock, idempotency keys, duplicate warning while preserving valid distinct vehicles).
-   - Local IndexedDB offline queue + connection monitor + sync indicator.
-
-4. **Phase 4: Schematic Map Editor & Study Management**
-   - Visual schematic map canvas showing study area, allowing points to be dragged, placed, and edited.
-   - Green markers for ENTRY, Indigo/Blue markers for EXIT.
-   - Route distance configuration.
-
-5. **Phase 5: Analytics Dashboard & Supervisor Review**
-   - Dynamic OD Matrix heatmap with row and column totals.
-   - Travel time distribution charts and percentile curve.
-   - Ambiguity review table: supervisor can resolve or dismiss conflicting candidates.
-   - Export tools (Excel-compatible, CSV, printable PDF summary).
-
-6. **Phase 6: Bilingual & RTL Polish**
-   - Persian language toggle with RTL layout and Vazirmatn font.
-   - Unit tests run via `npx --yes tsx --test` and `python3 -m unittest`.
-   - Browser verification via `playwright-cli`.
+## Next priorities
+1. Run against Neon and record the result; deploy to a container host.
+2. Calibrate the matching heuristic with real field data and add a collision-risk estimate (expected number of
+   same-suffix vehicles in the window) to each match.
+3. Point filter in the UI, server-side PDF, load test with many simultaneous observers.
