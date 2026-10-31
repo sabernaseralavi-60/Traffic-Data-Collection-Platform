@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import express, { type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 import helmet from 'helmet';
 import { rateLimit } from 'express-rate-limit';
@@ -9,7 +10,7 @@ import { ts, type Db, type Query } from './db.ts';
 import { EngineError, engineOptions, runEngine } from './engine.ts';
 import { resetDemoObservations } from './seed.ts';
 import {
-  assignmentsSchema, batchSchema, categoryCreateSchema, categoryPatchSchema, loginSchema, matchSchema, observationSchema, pointsSchema,
+  assignmentsSchema, batchSchema, categoryCreateSchema, correctSchema, mapCreateSchema, mapPatchSchema, categoryPatchSchema, loginSchema, matchSchema, observationSchema, pointsSchema,
   reviewSchema, studyCreateSchema, studyPatchSchema, userCreateSchema, userPatchSchema, voidSchema, type MatchParams,
 } from './validation.ts';
 import { buildWorkbook } from './xlsx.ts';
@@ -19,7 +20,8 @@ const reviewWithClear = reviewSchema.extend({ decision: z.enum(['REVIEWED', 'REJ
 const wrap = (fn: (req: Request, res: Response) => Promise<unknown>): RequestHandler => (req, res, next) => { fn(req, res).catch(next); };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const OBS_COLS = `o.id, o.study_id, o.point_code, o.point_type, o.plate_suffix::text AS plate_suffix, o.vehicle_category, o.vehicle_color,
-  ${ts('o.observed_at')} AS observation_timestamp, ${ts('o.received_at')} AS created_at, o.observer_id, u.full_name AS observer_name, o.idempotency_key`;
+  ${ts('o.observed_at')} AS observation_timestamp, ${ts('o.received_at')} AS created_at, o.observer_id, u.full_name AS observer_name, o.idempotency_key,
+  (o.audio IS NOT NULL) AS has_audio, o.audio_ms`;
 const OBS_FROM = `FROM observations o JOIN users u ON u.id = o.observer_id`;
 const BOM = String.fromCharCode(0xfeff);
 const VOID_WINDOW_MS = 10 * 60_000;
@@ -32,6 +34,22 @@ class HttpError extends Error {
 type Rejection = { status: 'rejected'; code: string; error: string };
 type Recorded = { status: 'created' | 'duplicate'; observation: Record<string, any> } | Rejection;
 const rejected = (code: string, error: string): Rejection => ({ status: 'rejected', code, error });
+
+const AUDIO_MIMES = ['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/mpeg', 'audio/wav'];
+/** Decodes an optional voice clip; returns null (clip dropped) when it is missing, too large or not really audio. */
+function decodeClip(input: { audio_b64?: string; audio_mime?: string; audio_ms?: number }) {
+  if (!input.audio_b64) return null;
+  const mime = (input.audio_mime || '').split(';')[0].trim().toLowerCase();
+  if (!AUDIO_MIMES.includes(mime)) return null;
+  const b = Buffer.from(input.audio_b64, 'base64');
+  if (b.length < 100 || b.length > 200_000) return null;
+  const ok = mime === 'audio/webm' ? b.readUInt32BE(0) === 0x1a45dfa3
+    : mime === 'audio/ogg' ? b.subarray(0, 4).toString('latin1') === 'OggS'
+    : mime === 'audio/mp4' ? b.subarray(4, 8).toString('latin1') === 'ftyp'
+    : mime === 'audio/wav' ? b.subarray(0, 4).toString('latin1') === 'RIFF'
+    : (b.subarray(0, 3).toString('latin1') === 'ID3' || (b[0] === 0xff && (b[1] & 0xe0) === 0xe0));
+  return ok ? { bytes: b, mime, ms: Math.min(input.audio_ms ?? 0, 30_000) } : null;
+}
 
 function validateImage(dataUrl: string): string | null {
   const m = /^data:(image\/(?:png|jpeg|svg\+xml));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
@@ -58,7 +76,7 @@ export function createApp(cfg: Config, db: Db) {
       directives: {
         defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"], imgSrc: ["'self'", 'data:', 'blob:'],
         fontSrc: ["'self'", 'data:'], connectSrc: ["'self'"], workerSrc: ["'self'"], manifestSrc: ["'self'"], objectSrc: ["'none'"],
-        frameAncestors: ["'none'"], baseUri: ["'self'"], formAction: ["'self'"],
+        mediaSrc: ["'self'", 'blob:'], frameAncestors: ["'none'"], baseUri: ["'self'"], formAction: ["'self'"],
       },
     } : false,
   }));
@@ -93,17 +111,19 @@ export function createApp(cfg: Config, db: Db) {
   }
 
   async function studyDetail(user: AuthUser, s: Record<string, any>) {
-    const points = await q(`SELECT id, code, point_type, description, x_percent::float8 AS x_percent, y_percent::float8 AS y_percent FROM observation_points WHERE study_id = $1 ORDER BY code`, [s.id]);
+    const points = await q(`SELECT id, code, map_id, point_type, description, x_percent::float8 AS x_percent, y_percent::float8 AS y_percent FROM observation_points WHERE study_id = $1 ORDER BY code`, [s.id]);
     const routes = await q(`SELECT origin_code, destination_code, distance_meters::float8 AS distance_meters FROM route_distances WHERE study_id = $1 ORDER BY origin_code, destination_code`, [s.id]);
     const assignments = await q(
       `SELECT a.id, a.user_id, u.username, u.full_name, a.point_code, ${ts('a.period_start')} AS period_start, ${ts('a.period_end')} AS period_end
        FROM study_assignments a JOIN users u ON u.id = a.user_id WHERE a.study_id = $1 ${user.role === 'OBSERVER' ? 'AND a.user_id = $2' : ''} ORDER BY a.point_code, u.username`,
       user.role === 'OBSERVER' ? [s.id, user.id] : [s.id]);
     const [{ n }] = await q('SELECT count(*)::int AS n FROM observations WHERE study_id = $1 AND voided_at IS NULL', [s.id]);
+    const maps = (await q(`SELECT id, name, sort_order, (image IS NOT NULL) AS has_image, substr(md5(coalesce(image,'')), 1, 10) AS v FROM study_maps WHERE study_id = $1 ORDER BY sort_order, created_at`, [s.id]))
+      .map((m) => ({ id: m.id, name: m.name, sort_order: m.sort_order, image_url: m.has_image ? `/api/v1/studies/${s.id}/maps/${m.id}/image?v=${m.v}` : null }));
     return {
       id: s.id, name: s.name, description: s.description, study_date: s.study_date_text, start_time: s.start_time, end_time: s.end_time,
-      timezone: s.timezone, supervisor_name: s.supervisor_name, status: s.status, schematic_type: s.schematic_type,
-      schematic_image_url: s.schematic_image ?? undefined, is_demo: s.is_demo, retention_days: s.retention_days, created_at: s.created_at,
+      timezone: s.timezone, supervisor_name: s.supervisor_name, status: s.status, audio_enabled: s.audio_enabled, maps,
+      is_demo: s.is_demo, retention_days: s.retention_days, created_at: s.created_at,
       points, routes, assignments, observation_count: n,
     };
   }
@@ -253,9 +273,10 @@ export function createApp(cfg: Config, db: Db) {
   api.post('/studies', requireRole('ADMIN'), wrap(async (req, res) => {
     const b = studyCreateSchema.parse(req.body);
     const [s] = await q(
-      `INSERT INTO studies (name, description, study_date, start_time, end_time, timezone, supervisor_name, status, retention_days, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
-      [b.name, b.description, b.study_date, b.start_time, b.end_time, b.timezone, b.supervisor_name, b.status, b.retention_days ?? null, req.user!.id]);
+      `INSERT INTO studies (name, description, study_date, start_time, end_time, timezone, supervisor_name, status, retention_days, audio_enabled, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+      [b.name, b.description, b.study_date, b.start_time, b.end_time, b.timezone, b.supervisor_name, b.status, b.retention_days ?? null, b.audio_enabled, req.user!.id]);
+    await q(`INSERT INTO study_maps (study_id, name, sort_order) VALUES ($1, 'Map 1', 0)`, [s.id]);
     await audit(req.user, 'study_created', 'study', s.id, { name: b.name });
     res.status(201).json(await studyDetail(req.user!, await visibleStudy(req.user!, s.id)));
   }));
@@ -268,12 +289,6 @@ export function createApp(cfg: Config, db: Db) {
     const id = idParam(req);
     await visibleStudy(req.user!, id);
     const b = studyPatchSchema.parse(req.body);
-    if (b.schematic_image) {
-      const err = validateImage(b.schematic_image);
-      if (err) throw new HttpError(400, err, 'bad_image');
-      b.schematic_type = 'CUSTOM_IMAGE';
-    }
-    if (b.schematic_image === null) b.schematic_type = 'SCHEMATIC_GRID';
     const sets: string[] = []; const vals: unknown[] = [id];
     for (const [k, v] of Object.entries(b)) { vals.push(v); sets.push(`${k} = $${vals.length}`); }
     if (!sets.length) throw new HttpError(400, 'Nothing to update', 'empty');
@@ -312,9 +327,10 @@ export function createApp(cfg: Config, db: Db) {
           const [{ n }] = await tq('SELECT count(*)::int AS n FROM observations WHERE study_id = $1 AND point_code = $2', [id, p.code]);
           if (n > 0) throw new HttpError(409, `Point ${p.code} already has observations; its ENTRY/EXIT type cannot change`, 'point_in_use');
         }
-        await tq(`INSERT INTO observation_points (study_id, code, point_type, description, x_percent, y_percent) VALUES ($1,$2,$3,$4,$5,$6)
-                  ON CONFLICT (study_id, code) DO UPDATE SET point_type = EXCLUDED.point_type, description = EXCLUDED.description, x_percent = EXCLUDED.x_percent, y_percent = EXCLUDED.y_percent`,
-          [id, p.code, p.point_type, p.description, p.x_percent, p.y_percent]);
+        if (p.map_id && !(await tq('SELECT 1 FROM study_maps WHERE id = $1 AND study_id = $2', [p.map_id, id])).length) throw new HttpError(400, `Map of point ${p.code} does not belong to this study`, 'bad_map');
+        await tq(`INSERT INTO observation_points (study_id, code, map_id, point_type, description, x_percent, y_percent) VALUES ($1,$2,$3,$4,$5,$6,$7)
+                  ON CONFLICT (study_id, code) DO UPDATE SET map_id = EXCLUDED.map_id, point_type = EXCLUDED.point_type, description = EXCLUDED.description, x_percent = EXCLUDED.x_percent, y_percent = EXCLUDED.y_percent`,
+          [id, p.code, p.map_id ?? null, p.point_type, p.description, p.x_percent, p.y_percent]);
       }
       await tq('DELETE FROM route_distances WHERE study_id = $1', [id]);
       for (const r of b.routes) await tq('INSERT INTO route_distances (study_id, origin_code, destination_code, distance_meters) VALUES ($1,$2,$3,$4)', [id, r.origin_code, r.destination_code, r.distance_meters]);
@@ -342,6 +358,59 @@ export function createApp(cfg: Config, db: Db) {
     res.json(await studyDetail(req.user!, await visibleStudy(req.user!, id)));
   }));
 
+  // ------------------------------------------------------------------ map sections (several schematic maps per study)
+  const mapIdParam = (req: Request) => { const m = String(req.params.mapId); if (!UUID.test(m)) throw new HttpError(404, 'Not found', 'not_found'); return m; };
+
+  api.post('/studies/:id/maps', requireRole('ADMIN'), wrap(async (req, res) => {
+    const id = idParam(req);
+    await visibleStudy(req.user!, id);
+    const b = mapCreateSchema.parse(req.body);
+    if (b.image) { const err = validateImage(b.image); if (err) throw new HttpError(400, err, 'bad_image'); }
+    const [{ n }] = await q('SELECT count(*)::int AS n FROM study_maps WHERE study_id = $1', [id]);
+    if (n >= 8) throw new HttpError(409, 'A study can have at most 8 map sections', 'too_many_maps');
+    await q('INSERT INTO study_maps (study_id, name, image, sort_order) VALUES ($1,$2,$3,$4)', [id, b.name, b.image ?? null, n]);
+    await audit(req.user, 'map_added', 'study', id, { name: b.name });
+    res.status(201).json(await studyDetail(req.user!, await visibleStudy(req.user!, id)));
+  }));
+
+  api.patch('/studies/:id/maps/:mapId', requireRole('ADMIN'), wrap(async (req, res) => {
+    const id = idParam(req), mapId = mapIdParam(req);
+    await visibleStudy(req.user!, id);
+    const b = mapPatchSchema.parse(req.body);
+    if (b.image) { const err = validateImage(b.image); if (err) throw new HttpError(400, err, 'bad_image'); }
+    const sets: string[] = []; const vals: unknown[] = [mapId, id];
+    for (const [k, v] of Object.entries(b)) { vals.push(v); sets.push(`${k} = $${vals.length}`); }
+    if (!sets.length) throw new HttpError(400, 'Nothing to update', 'empty');
+    const rows = await q(`UPDATE study_maps SET ${sets.join(', ')} WHERE id = $1 AND study_id = $2 RETURNING id`, vals);
+    if (!rows.length) throw new HttpError(404, 'Map not found', 'not_found');
+    await audit(req.user, 'map_updated', 'study', id, { map: mapId, fields: Object.keys(b) });
+    res.json(await studyDetail(req.user!, await visibleStudy(req.user!, id)));
+  }));
+
+  api.delete('/studies/:id/maps/:mapId', requireRole('ADMIN'), wrap(async (req, res) => {
+    const id = idParam(req), mapId = mapIdParam(req);
+    await visibleStudy(req.user!, id);
+    const [{ n }] = await q('SELECT count(*)::int AS n FROM study_maps WHERE study_id = $1', [id]);
+    if (n <= 1) throw new HttpError(409, 'A study keeps at least one map section', 'last_map');
+    const first = await q('SELECT id FROM study_maps WHERE study_id = $1 AND id <> $2 ORDER BY sort_order, created_at LIMIT 1', [id, mapId]);
+    await q('UPDATE observation_points SET map_id = $3 WHERE study_id = $1 AND map_id = $2', [id, mapId, first[0].id]); // its points move to the first remaining map
+    await q('DELETE FROM study_maps WHERE id = $1 AND study_id = $2', [mapId, id]);
+    await audit(req.user, 'map_deleted', 'study', id, { map: mapId });
+    res.json(await studyDetail(req.user!, await visibleStudy(req.user!, id)));
+  }));
+
+  api.get('/studies/:id/maps/:mapId/image', wrap(async (req, res) => {
+    const id = idParam(req), mapId = mapIdParam(req);
+    await visibleStudy(req.user!, id);
+    const [m] = await q('SELECT image FROM study_maps WHERE id = $1 AND study_id = $2', [mapId, id]);
+    const mt = m?.image ? /^data:(image\/(?:png|jpeg|svg\+xml));base64,(.+)$/.exec(m.image) : null;
+    if (!mt) throw new HttpError(404, 'No image', 'not_found');
+    res.setHeader('Content-Type', mt[1]);
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox"); // an SVG opened directly cannot run anything
+    res.send(Buffer.from(mt[2], 'base64'));
+  }));
+
   api.post('/studies/:id/seed-scenario', requireRole('ADMIN'), wrap(async (req, res) => {
     const id = idParam(req);
     const s = await visibleStudy(req.user!, id);
@@ -355,7 +424,7 @@ export function createApp(cfg: Config, db: Db) {
   async function record(user: AuthUser, input: ReturnType<typeof observationSchema.parse>, now = new Date()): Promise<Recorded> {
     const suffix = normalizePlateDigits(input.plate_suffix);
     if (suffix.length !== 3) return rejected('invalid_suffix', 'The plate suffix must be exactly 3 digits');
-    const [study] = await q('SELECT id, status FROM studies WHERE id = $1', [input.study_id]);
+    const [study] = await q('SELECT id, status, audio_enabled FROM studies WHERE id = $1', [input.study_id]);
     const asg = await q(
       `SELECT a.point_code, p.point_type, a.period_start, a.period_end FROM study_assignments a
        JOIN observation_points p ON p.study_id = a.study_id AND p.code = a.point_code WHERE a.study_id = $1 AND a.user_id = $2`, [input.study_id, user.id]);
@@ -370,10 +439,11 @@ export function createApp(cfg: Config, db: Db) {
     if (point.period_end && observed.getTime() > new Date(point.period_end).getTime() + slack) return rejected('outside_period', 'The observation is after your assigned period');
     let category = input.vehicle_category || 'UNKNOWN';
     if (!(await q('SELECT 1 FROM vehicle_categories WHERE code = $1', [category])).length) category = 'UNKNOWN'; // never lose a sighting over a label
+    const clip = study.audio_enabled ? decodeClip(input) : null; // a bad or disabled clip never blocks the sighting itself
     const ins = await q(
-      `INSERT INTO observations (study_id, point_code, point_type, plate_suffix, vehicle_category, vehicle_color, observed_at, observer_id, idempotency_key)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (observer_id, idempotency_key) DO NOTHING RETURNING id`,
-      [input.study_id, point.point_code, point.point_type, suffix, category, input.vehicle_color ?? null, observed.toISOString(), user.id, input.idempotency_key]);
+      `INSERT INTO observations (study_id, point_code, point_type, plate_suffix, vehicle_category, vehicle_color, observed_at, observer_id, idempotency_key, audio, audio_mime, audio_ms)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (observer_id, idempotency_key) DO NOTHING RETURNING id`,
+      [input.study_id, point.point_code, point.point_type, suffix, category, input.vehicle_color ?? null, observed.toISOString(), user.id, input.idempotency_key, clip?.bytes ?? null, clip?.mime ?? null, clip?.ms ?? null]);
     const rows = await q(
       `SELECT ${OBS_COLS} ${OBS_FROM} WHERE ${ins.length ? 'o.id = $1' : 'o.observer_id = $1 AND o.idempotency_key = $2'}`,
       ins.length ? [ins[0].id] : [user.id, input.idempotency_key]);
@@ -423,6 +493,37 @@ export function createApp(cfg: Config, db: Db) {
     await q('UPDATE observations SET voided_at = now(), voided_by = $2, void_reason = $3 WHERE id = $1', [id, u.id, reason ?? null]);
     await audit(u, 'observation_voided', 'observation', id, { reason });
     res.json({ ok: true });
+  }));
+
+  api.get('/observations/:id/audio', wrap(async (req, res) => {
+    const u = req.user!;
+    const id = idParam(req);
+    const [o] = await q('SELECT observer_id, audio, audio_mime FROM observations WHERE id = $1', [id]);
+    if (!o || !o.audio || (u.role === 'OBSERVER' && o.observer_id !== u.id)) throw new HttpError(404, 'No audio', 'not_found');
+    res.setHeader('Content-Type', o.audio_mime);
+    res.setHeader('Cache-Control', 'private, max-age=600');
+    res.send(Buffer.from(o.audio));
+  }));
+
+  /** Supervisor fixes a wrong suffix (e.g. after listening to the clip): the old event is voided, a new one keeps time, point, observer and clip. */
+  api.post('/observations/:id/correct', requireRole('ADMIN', 'SUPERVISOR'), wrap(async (req, res) => {
+    const id = idParam(req);
+    const b = correctSchema.parse(req.body);
+    const suffix = normalizePlateDigits(b.plate_suffix);
+    if (suffix.length !== 3) throw new HttpError(400, 'The plate suffix must be exactly 3 digits', 'invalid_suffix');
+    const created = await db.tx(async (tq) => {
+      const [o] = await tq('SELECT * FROM observations WHERE id = $1 AND voided_at IS NULL', [id]);
+      if (!o) throw new HttpError(404, 'Observation not found', 'not_found');
+      if (String(o.plate_suffix).trim() === suffix) throw new HttpError(400, 'The suffix is already ' + suffix, 'no_change');
+      await tq('UPDATE observations SET voided_at = now(), voided_by = $2, void_reason = $3 WHERE id = $1', [id, req.user!.id, `corrected to ${suffix}${b.reason ? ': ' + b.reason : ''}`]);
+      const [n] = await tq(
+        `INSERT INTO observations (study_id, point_code, point_type, plate_suffix, vehicle_category, vehicle_color, observed_at, observer_id, idempotency_key, audio, audio_mime, audio_ms)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+        [o.study_id, o.point_code, o.point_type, suffix, o.vehicle_category, o.vehicle_color, o.observed_at, o.observer_id, `corr-${crypto.randomUUID()}`, o.audio, o.audio_mime, o.audio_ms]);
+      return n.id as string;
+    });
+    await audit(req.user, 'observation_corrected', 'observation', id, { new_id: created, suffix });
+    res.json({ ok: true, id: created });
   }));
 
   // ------------------------------------------------------------------ matching, reviews, exports

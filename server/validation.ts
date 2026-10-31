@@ -33,15 +33,29 @@ export const studyCreateSchema = z.object({
   supervisor_name: z.string().max(100).default(''),
   status: z.enum(['DRAFT', 'ACTIVE', 'COMPLETED']).default('DRAFT'),
   retention_days: z.number().int().min(1).max(3650).nullable().optional(),
+  audio_enabled: z.boolean().default(true),
 });
-export const studyPatchSchema = studyCreateSchema.partial().extend({
-  schematic_type: z.enum(['SCHEMATIC_GRID', 'CUSTOM_IMAGE']).optional(),
-  schematic_image: z.string().max(1_600_000).nullable().optional(),
+// NOT studyCreateSchema.partial(): zod still applies .default() to omitted keys, which silently reset status, times, zone...
+export const studyPatchSchema = z.object({
+  name: z.string().trim().min(1).max(150).optional(),
+  description: z.string().max(2000).optional(),
+  study_date: isoDate.optional(),
+  start_time: hhmm.optional(),
+  end_time: hhmm.optional(),
+  timezone: timezone.optional(),
+  supervisor_name: z.string().max(100).optional(),
+  status: z.enum(['DRAFT', 'ACTIVE', 'COMPLETED']).optional(),
+  retention_days: z.number().int().min(1).max(3650).nullable().optional(),
+  audio_enabled: z.boolean().optional(),
 });
+
+export const mapCreateSchema = z.object({ name: z.string().trim().min(1).max(60), image: z.string().max(1_600_000).nullable().optional() });
+export const mapPatchSchema = z.object({ name: z.string().trim().min(1).max(60).optional(), image: z.string().max(1_600_000).nullable().optional() });
 
 export const pointsSchema = z.object({
   points: z.array(z.object({
     code: pointCode,
+    map_id: z.uuid().nullable().optional(),
     point_type: z.enum(['ENTRY', 'EXIT']),
     description: z.string().max(200).default(''),
     x_percent: z.number().min(0).max(100),
@@ -98,7 +112,12 @@ export const observationSchema = z.object({
   vehicle_color: z.string().trim().max(20).optional(),
   observed_at: isoInstant.optional(),
   idempotency_key: z.string().min(8).max(80),
+  // optional short voice clip of this passage (base64, <= ~200 KB decoded); kept as evidence for supervisors
+  audio_b64: z.string().regex(/^[A-Za-z0-9+/]+={0,2}$/).max(1_000_000).optional(), // larger than the limit below is accepted and then dropped, so a sighting is never refused because of its clip
+  audio_mime: z.string().max(60).optional(),
+  audio_ms: z.number().int().min(0).max(30_000).optional(),
 });
+export const correctSchema = z.object({ plate_suffix: z.string().min(1).max(12), reason: z.string().trim().max(200).optional() });
 export const batchSchema = z.object({ observations: z.array(observationSchema).min(1).max(500) });
 export const voidSchema = z.object({ reason: z.string().trim().max(200).optional() });
 

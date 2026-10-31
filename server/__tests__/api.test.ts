@@ -314,18 +314,102 @@ describe('full MVP acceptance scenario (spec section 19)', () => {
     expect(r.status).toBe(400);
     expect(r.data.issues.length).toBeGreaterThan(0);
     expect(JSON.stringify(r.data)).not.toMatch(/stack|node_modules|SELECT/i);
-    expect((await admin.call('PATCH', `/api/v1/studies/${studyId}`, { schematic_image: 'data:image/svg+xml;base64,' + Buffer.from('<svg><script>alert(1)</script></svg>').toString('base64') })).status).toBe(400);
+    expect((await admin.call('POST', `/api/v1/studies/${studyId}/maps`, { name: 'bad', image: 'data:image/svg+xml;base64,' + Buffer.from('<svg><script>alert(1)</script></svg>').toString('base64') })).status).toBe(400);
     expect((await admin.call('GET', '/api/v1/studies/not-a-uuid')).status).toBe(404);
   });
 
-  it('a valid SVG schematic can be stored and is returned with the study', async () => {
+  it('a study has several map sections; each can hold points; images are served separately', async () => {
     const svg = 'data:image/svg+xml;base64,' + Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>').toString('base64');
-    const r = await admin.call('PATCH', `/api/v1/studies/${studyId}`, { schematic_image: svg });
-    expect(r.status).toBe(200);
-    expect(r.data.schematic_type).toBe('CUSTOM_IMAGE');
-    expect(r.data.schematic_image_url).toBe(svg);
-    const list = (await admin.call('GET', '/api/v1/studies')).data;
-    expect(JSON.stringify(list)).not.toContain('base64'); // list never carries the image
+    const r = await admin.call('POST', `/api/v1/studies/${studyId}/maps`, { name: 'North junction', image: svg });
+    expect(r.status).toBe(201);
+    expect(r.data.maps.length).toBe(2);
+    const map2 = r.data.maps.find((m: any) => m.name === 'North junction');
+    expect(map2.image_url).toMatch(/\/maps\/.+\/image\?v=/);
+    expect(JSON.stringify(r.data)).not.toContain('base64'); // detail carries a URL, never the image
+    const img = await admin.call('GET', map2.image_url);
+    expect(img.status).toBe(200);
+    expect(img.headers.get('content-type')).toBe('image/svg+xml');
+    expect(img.headers.get('content-security-policy')).toContain('sandbox');
+    expect((await o1.call('GET', map2.image_url)).status).toBe(200); // assigned observers may see the map
+    expect((await new Client().call('GET', map2.image_url)).status).toBe(401);
+    expect(JSON.stringify((await admin.call('GET', '/api/v1/studies')).data)).not.toContain('base64');
+
+    const detail = (await admin.call('GET', `/api/v1/studies/${studyId}`)).data;
+    const pts = detail.points.map((p: any) => ({ code: p.code, map_id: p.code === 'E02' ? map2.id : p.map_id, point_type: p.point_type, description: p.description, x_percent: p.x_percent, y_percent: p.y_percent }));
+    const saved = await admin.call('PUT', `/api/v1/studies/${studyId}/points`, { points: pts, routes: detail.routes });
+    expect(saved.status, JSON.stringify(saved.data)).toBe(200);
+    expect(saved.data.points.find((p: any) => p.code === 'E02').map_id).toBe(map2.id);
+    expect((await admin.call('PUT', `/api/v1/studies/${studyId}/points`, { points: pts.map((p: any, i: number) => (i === 0 ? { ...p, map_id: '00000000-0000-4000-8000-000000000000' } : p)), routes: detail.routes })).status).toBe(400);
+
+    const del = await admin.call('DELETE', `/api/v1/studies/${studyId}/maps/${map2.id}`);
+    expect(del.status).toBe(200);
+    expect(del.data.maps.length).toBe(1);
+    expect(del.data.points.find((p: any) => p.code === 'E02').map_id).toBe(del.data.maps[0].id); // points move to the remaining map
+    expect((await admin.call('DELETE', `/api/v1/studies/${studyId}/maps/${del.data.maps[0].id}`)).data.code).toBe('last_map');
+  });
+
+  const clip = (n = 4000) => Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(n, 7)]).toString('base64');
+
+  it('a voice clip is stored with the passage and only authorised people can play it', async () => {
+    const r = await o1.call('POST', '/api/v1/observations', { study_id: studyId, plate_suffix: '615', observed_at: '2026-10-30T09:10:00+03:30', idempotency_key: 'audio-clip-0001', audio_b64: clip(), audio_mime: 'audio/webm;codecs=opus', audio_ms: 2300 });
+    expect(r.status).toBe(201);
+    expect(r.data.observation.has_audio).toBe(true);
+    expect(r.data.observation.audio_ms).toBe(2300);
+    const id = r.data.observation.id;
+    const play = await sup.call('GET', `/api/v1/observations/${id}/audio`);
+    expect(play.status).toBe(200);
+    expect(play.headers.get('content-type')).toBe('audio/webm');
+    expect((play.data as Buffer).length).toBe(4004);
+    expect((await o1.call('GET', `/api/v1/observations/${id}/audio`)).status).toBe(200); // the recorder may replay it
+    expect((await o2.call('GET', `/api/v1/observations/${id}/audio`)).status).toBe(404);
+    expect((await new Client().call('GET', `/api/v1/observations/${id}/audio`)).status).toBe(401);
+    const list = (await sup.call('GET', `/api/v1/studies/${studyId}/observations`)).data;
+    expect(list.find((o: any) => o.id === id).has_audio).toBe(true);
+    expect(JSON.stringify(list)).not.toMatch(/audio_b64|AEUQ/); // bytes never travel in lists
+  });
+
+  it('a bad, oversized or wrong-type clip is dropped but the sighting is still recorded', async () => {
+    const send = (key: string, extra: object) => o1.call('POST', '/api/v1/observations', { study_id: studyId, plate_suffix: '616', observed_at: '2026-10-30T09:11:00+03:30', idempotency_key: key, ...extra });
+    for (const [key, extra] of [
+      ['audio-big-0001', { audio_b64: clip(210_000), audio_mime: 'audio/webm' }],
+      ['audio-fake-001', { audio_b64: Buffer.alloc(500, 1).toString('base64'), audio_mime: 'audio/webm' }],
+      ['audio-mime-001', { audio_b64: clip(), audio_mime: 'text/html' }],
+    ] as const) {
+      const r = await send(key, extra);
+      expect(r.status, key).toBe(201);
+      expect(r.data.observation.has_audio, key).toBe(false);
+    }
+  });
+
+  it('a supervisor can correct a mistyped suffix after listening; the clip and the original time are kept', async () => {
+    const rec = (await o1.call('POST', '/api/v1/observations', { study_id: studyId, plate_suffix: '321', observed_at: '2026-10-30T09:20:00+03:30', idempotency_key: 'to-correct-001', audio_b64: clip(), audio_mime: 'audio/webm' })).data.observation;
+    expect((await o1.call('POST', `/api/v1/observations/${rec.id}/correct`, { plate_suffix: '123' })).status).toBe(403);
+    expect((await sup.call('POST', `/api/v1/observations/${rec.id}/correct`, { plate_suffix: '12' })).status).toBe(400);
+    const ok = await sup.call('POST', `/api/v1/observations/${rec.id}/correct`, { plate_suffix: '١٢٣', reason: 'heard 1-2-3' });
+    expect(ok.status, JSON.stringify(ok.data)).toBe(200);
+    const list = (await sup.call('GET', `/api/v1/studies/${studyId}/observations`)).data;
+    expect(list.find((o: any) => o.id === rec.id)).toBeUndefined(); // original is voided, not erased
+    const fixed = list.find((o: any) => o.id === ok.data.id);
+    expect([fixed.plate_suffix, fixed.observation_timestamp, fixed.has_audio, fixed.observer_name]).toEqual(['123', rec.observation_timestamp, true, rec.observer_name]);
+    const row = (await db.query('SELECT void_reason FROM observations WHERE id = $1', [rec.id]))[0];
+    expect(row.void_reason).toContain('corrected to 123');
+  });
+
+  it('PATCH changes only the fields it names (no silent reset to defaults)', async () => {
+    const before = (await admin.call('GET', `/api/v1/studies/${studyId}`)).data;
+    await admin.call('PATCH', `/api/v1/studies/${studyId}`, { supervisor_name: 'Eng. Test', retention_days: 90 });
+    const after = (await admin.call('GET', `/api/v1/studies/${studyId}`)).data;
+    expect({ ...after, supervisor_name: before.supervisor_name, retention_days: before.retention_days }).toEqual({ ...before });
+    expect([after.supervisor_name, after.retention_days, after.status, after.timezone]).toEqual(['Eng. Test', 90, 'ACTIVE', 'Asia/Tehran']);
+    await admin.call('PATCH', `/api/v1/studies/${studyId}`, { retention_days: null });
+  });
+
+  it('with audio switched off for the study, clips are ignored', async () => {
+    expect((await admin.call('PATCH', `/api/v1/studies/${studyId}`, { audio_enabled: false })).data.audio_enabled).toBe(false);
+    const r = await o1.call('POST', '/api/v1/observations', { study_id: studyId, plate_suffix: '617', observed_at: '2026-10-30T09:30:00+03:30', idempotency_key: 'audio-off-0001', audio_b64: clip(), audio_mime: 'audio/webm' });
+    expect(r.status).toBe(201);
+    expect(r.data.observation.has_audio).toBe(false);
+    await admin.call('PATCH', `/api/v1/studies/${studyId}`, { audio_enabled: true });
   });
 });
 
