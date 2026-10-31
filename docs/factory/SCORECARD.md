@@ -1,6 +1,6 @@
 # SCORECARD - TrafficLab
 
-Scores 0-10 with evidence. "Before" = baseline `705be6a` by code reading (the baseline was not run in a browser); "After" = this commit with tests.
+Scores 0-10 with evidence. "Before" = baseline `acfb9ef` by code reading (the baseline was not run in a browser); "After" = this commit with tests.
 
 | Dimension | Before | After | Evidence | Weakest point |
 |---|---|---|---|---|

@@ -5,7 +5,7 @@
 ## Where we are
 - Stage: 5-ship (code verified locally; push to GitHub done when the commit hash is in the closing report; **live deployment not done**)
 - Created 2026-10-31. Depth **deep** (score 5: auth, PII-like data, size).
-- Baseline commit `705be6a` (builder output, only `.gitignore` changed).  Builder: Google AI Studio.
+- Baseline commit `acfb9ef` (builder output, only `.gitignore` changed).  Builder: Google AI Studio.
 
 ## Inputs
 - Spec: master prompt in `New Microsoft Word Document.docx` (root, git-ignored; not published). Register: `TRACE.md`.
