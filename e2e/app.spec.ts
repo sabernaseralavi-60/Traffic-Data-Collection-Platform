@@ -160,13 +160,16 @@ test.describe('supervisor and administrator', () => {
     await expect(page.getByTestId('marker-E01')).toBeVisible();
     await page.getByTestId('dist-E01-X01').fill('1800');
 
-    // one person per point, created on the spot
+    // one person per point, created on the spot inside the point's own card, with suggested short credentials
     for (const [point, name] of [['E01', 'Counter Entry'], ['X01', 'Counter Exit']] as const) {
-      await page.getByTestId('qp-name').fill(`${name} ${tag}`);
-      await page.getByTestId('qp-username').fill(`${name.split(' ')[1].toLowerCase()}.${tag}`.slice(0, 32));
-      await page.getByTestId('qp-password').fill('Observer-pass-1');
-      await page.getByTestId('qp-point').selectOption(point);
-      await page.getByTestId('qp-create').click();
+      await page.getByTestId(`new-person-${point}`).click();
+      const form = page.getByTestId(`np-form-${point}`);
+      await expect(form.getByTestId('np-username')).toHaveValue(point.toLowerCase());       // suggestion = the point code
+      await expect(form.getByTestId('np-password')).toHaveValue(/^\d\d$/);                  // suggestion = two digits
+      await form.getByTestId('np-name').fill(`${name} ${tag}`);
+      await form.getByTestId('np-username').fill(`${name.split(' ')[1].toLowerCase()}.${tag}`.slice(0, 32));
+      await form.getByTestId('np-password').fill('Observer-pass-1');
+      await form.getByTestId('np-create').click();
       await expect(page.getByTestId('setup-msg')).toContainText(/account created/i);
     }
     await expect(page.getByTestId('person-E01')).toContainText('Counter Entry');
@@ -174,6 +177,14 @@ test.describe('supervisor and administrator', () => {
     await page.getByTestId('save-all').click();
     await expect(page.getByTestId('setup-msg')).toContainText(/saved/i);
     await expect(page.getByTestId('person-X01')).toContainText('Counter Exit'); // still there after the reload from the server
+    // change the username and password of the person at X01 right in the card (2-digit password), effective at once
+    const newName = `xz.${tag}`.slice(0, 32);
+    await page.getByTestId('person-username-X01').fill(newName);
+    await page.getByTestId('person-password-X01').fill('73');
+    await page.getByTestId('person-apply-X01').click();
+    await expect(page.getByTestId('setup-msg')).toContainText(/updated/i);
+    await expect(page.getByTestId('person-fresh-X01')).toHaveText('73');
+    await expect(page.getByTestId('person-X01')).toContainText(`@${newName}`);
     await page.getByTestId('study-status').selectOption('ACTIVE');
     await expect(page.getByTestId('study-status')).toHaveValue('ACTIVE');
     await shot(page, 'setup', project);
@@ -182,12 +193,18 @@ test.describe('supervisor and administrator', () => {
     await expect(page.getByTestId('team-sheet')).toBeVisible();
     await expect(page.getByTestId('team-sheet')).toContainText(`Counter Exit ${tag}`);
     await expect(page.getByTestId('team-sheet')).toContainText('North junction');
+    await expect(page.getByTestId('team-sheet')).not.toContainText('73');             // passwords are not printed unless asked
+    await page.emulateMedia({ media: 'screen' });
+    await page.getByTestId('sheet-creds').check();
+    await page.emulateMedia({ media: 'print' });
+    await expect(page.getByTestId('team-sheet')).toContainText(`${newName} / 73`);
+    await expect(page.getByTestId('team-sheet')).toContainText('Observer-pass-1');
     await page.emulateMedia({ media: 'screen' });
 
     // the new person can sign in and sees exactly their own point
     await page.getByTestId('logout').click();
     await expect(page.getByTestId('login-form')).toBeVisible(); // wait until the sign-out request has finished before navigating
-    await login(page, `exit.${tag}`.slice(0, 32), 'Observer-pass-1');
+    await login(page, newName, '73');
     await expect(page.getByTestId('station-code')).toHaveText('X01');
   });
 

@@ -29,7 +29,11 @@ export const StudySetup: React.FC<Props> = ({ lang, study, onChanged }) => {
   const [mapId, setMapId] = useState<string | null>(null);
   const [tick, setTick] = useState(0); // bump to reload the local edit state from the server
   const [newMapName, setNewMapName] = useState('');
-  const [person, setPerson] = useState({ full_name: '', username: '', password: '', point: '' });
+  const [np, setNp] = useState<{ code: string; full_name: string; username: string; password: string } | null>(null); // inline "new person" form of one point card
+  const [edit, setEdit] = useState<Record<string, { username: string; password: string }>>({});
+  // credentials set on THIS page: only kept in memory (passwords are hashed on the server and cannot be shown again)
+  const [fresh, setFresh] = useState<Record<string, { username: string; password?: string }>>({});
+  const [showCreds, setShowCreds] = useState(false);
   const canvas = useRef<HTMLDivElement>(null);
   const [ratios, setRatios] = useState<Record<string, number>>({}); // width/height of each map image: markers are % of the IMAGE, so the frame must have its shape
   const [form, setForm] = useState({ name: '', study_date: new Date().toISOString().slice(0, 10), start_time: '08:00', end_time: '12:00', timezone: 'Asia/Tehran', supervisor_name: '' });
@@ -121,13 +125,47 @@ export const StudySetup: React.FC<Props> = ({ lang, study, onChanged }) => {
   const peopleOf = (code: string) => asg.map((r, i) => ({ r, i })).filter((x) => x.r.point_code === code);
   const addPerson = (code: string, userId: string) => userId && !asg.some((r) => r.point_code === code && r.user_id === userId) && setAsg([...asg, { user_id: userId, point_code: code, period_start: '', period_end: '' }]);
 
-  const createPerson = () => run(async () => {
-    if (!person.point) throw new Error(pick(lang, 'Choose the point this person will count at.', 'ایستگاهی را که این فرد در آن شمارش می‌کند انتخاب کنید.'));
-    const u = await api<{ id: string }>('POST', '/users', { username: person.username.trim().toLowerCase(), full_name: person.full_name.trim(), role: 'OBSERVER', password: person.password });
-    setAsg((a) => [...a, { user_id: u.id, point_code: person.point, period_start: '', period_end: '' }]);
-    setPerson({ full_name: '', username: '', password: '', point: person.point });
+  /** Suggestions that keep credentials short: username = the point code (e1, x2 ...), password = 2 digits without repeats or runs. */
+  const suggestUsername = (code: string) => {
+    const taken = new Set(observers.map((o) => o.username));
+    const base = code.toLowerCase();
+    let u = base;
+    for (let n = 2; taken.has(u); n++) u = `${base}${n}`;
+    return u;
+  };
+  const suggestPassword = () => {
+    for (;;) {
+      const n = 10 + (crypto.getRandomValues(new Uint32Array(1))[0] % 90);
+      const x = Math.floor(n / 10), y = n % 10;
+      if (x !== y && Math.abs(x - y) !== 1) return String(n);
+    }
+  };
+  const openNewPerson = (code: string) => setNp({ code, full_name: '', username: suggestUsername(code), password: suggestPassword() });
+
+  const createPersonAt = () => run(async () => {
+    if (!np) return;
+    const username = np.username.trim().toLowerCase();
+    const u = await api<{ id: string }>('POST', '/users', { username, full_name: np.full_name.trim(), role: 'OBSERVER', password: np.password });
+    setAsg((a) => [...a, { user_id: u.id, point_code: np.code, period_start: '', period_end: '' }]);
+    setFresh((f) => ({ ...f, [u.id]: { username, password: np.password } }));
+    setNp(null);
     await loadObservers();
   }, pick(lang, 'Account created and placed at the point. Press "Save everything" to confirm the assignment.', 'حساب ساخته شد و در ایستگاه قرار گرفت. برای نهایی‌شدن «ذخیرهٔ همه» را بزنید.'));
+
+  const applyCreds = (userId: string) => run(async () => {
+    const e = edit[userId];
+    const cur = observers.find((o) => o.id === userId);
+    if (!e || !cur) return;
+    const body: { username?: string; password?: string } = {};
+    const uname = e.username.trim().toLowerCase();
+    if (uname && uname !== cur.username) body.username = uname;
+    if (e.password) body.password = e.password;
+    if (!Object.keys(body).length) throw new Error(pick(lang, 'Nothing to change.', 'چیزی برای تغییر نیست.'));
+    await api('PATCH', `/users/${userId}`, body);
+    setFresh((f) => ({ ...f, [userId]: { username: body.username ?? cur.username, password: body.password ?? f[userId]?.password } }));
+    setEdit((x) => { const { [userId]: _drop, ...rest } = x; return rest; });
+    await loadObservers();
+  }, pick(lang, 'Username / password updated (effective immediately; the person is signed out everywhere if the password changed).', 'نام کاربری / رمز به‌روز شد (بلافاصله اعمال می‌شود؛ اگر رمز عوض شده باشد فرد از همهٔ دستگاه‌ها خارج می‌شود).'));
 
   const saveAll = () => run(async () => {
     const codes = new Set(points.map((p) => p.code));
@@ -237,33 +275,52 @@ export const StudySetup: React.FC<Props> = ({ lang, study, onChanged }) => {
                       <select aria-label="Section" value={p.map_id ?? firstMap ?? ''} onChange={(e) => setPoint(i, { map_id: e.target.value })} className={inputCls}>{maps.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select>
                     </div>
                     <div className="space-y-1.5">
-                      {peopleOf(p.code).map(({ r, i: ai }) => (
-                        <div key={ai} className="flex items-center gap-2 text-xs">
-                          <span className="px-2 py-1 rounded-lg bg-teal-500/15 border border-teal-500/30 text-teal-200 flex-1 truncate" data-testid={`person-${p.code}`}>{nameOf(r.user_id)?.full_name ?? '?'} <span className="font-mono text-slate-400">@{nameOf(r.user_id)?.username}</span></span>
-                          <details className="text-[10px] text-slate-400"><summary className="cursor-pointer">{pick(lang, 'shift', 'شیفت')}</summary>
-                            <div className="grid gap-1 mt-1"><input type="datetime-local" aria-label="From" value={r.period_start} onChange={(e) => setAsg(asg.map((x, k) => (k === ai ? { ...x, period_start: e.target.value } : x)))} className={inputCls} /><input type="datetime-local" aria-label="To" value={r.period_end} onChange={(e) => setAsg(asg.map((x, k) => (k === ai ? { ...x, period_end: e.target.value } : x)))} className={inputCls} /></div></details>
-                          <button onClick={() => setAsg(asg.filter((_, k) => k !== ai))} aria-label="Remove person" className="text-slate-500 hover:text-rose-400"><X className="w-3.5 h-3.5" /></button>
-                        </div>
-                      ))}
+                      {peopleOf(p.code).map(({ r, i: ai }) => {
+                        const u = nameOf(r.user_id);
+                        const e = edit[r.user_id];
+                        const changed = !!e && ((e.username.trim().toLowerCase() !== (u?.username ?? '') && e.username.trim() !== '') || e.password !== '');
+                        return (
+                          <div key={ai} className="rounded-xl bg-teal-500/10 border border-teal-500/30 p-2 space-y-1.5 text-xs">
+                            <div className="flex items-center gap-2">
+                              <span className="text-teal-200 flex-1 truncate font-semibold" data-testid={`person-${p.code}`}>{u?.full_name ?? '?'} <span className="font-mono text-slate-400">@{u?.username}</span></span>
+                              <details className="text-[10px] text-slate-400"><summary className="cursor-pointer">{pick(lang, 'shift', 'شیفت')}</summary>
+                                <div className="grid gap-1 mt-1"><input type="datetime-local" aria-label="From" value={r.period_start} onChange={(ev) => setAsg(asg.map((x, k) => (k === ai ? { ...x, period_start: ev.target.value } : x)))} className={inputCls} /><input type="datetime-local" aria-label="To" value={r.period_end} onChange={(ev) => setAsg(asg.map((x, k) => (k === ai ? { ...x, period_end: ev.target.value } : x)))} className={inputCls} /></div></details>
+                              <button onClick={() => setAsg(asg.filter((_, k) => k !== ai))} aria-label="Remove person" className="text-slate-500 hover:text-rose-400"><X className="w-3.5 h-3.5" /></button>
+                            </div>
+                            <div className="grid grid-cols-[1fr_1fr_auto] gap-1.5">
+                              <input aria-label="Username" value={e?.username ?? u?.username ?? ''} onChange={(ev) => setEdit({ ...edit, [r.user_id]: { username: ev.target.value.toLowerCase(), password: e?.password ?? '' } })} className={`${inputCls} font-mono`} data-testid={`person-username-${p.code}`} />
+                              <input aria-label="New password" placeholder={pick(lang, 'new password', 'رمز جدید')} autoComplete="off" value={e?.password ?? ''} onChange={(ev) => setEdit({ ...edit, [r.user_id]: { username: e?.username ?? u?.username ?? '', password: ev.target.value } })} className={`${inputCls} font-mono`} data-testid={`person-password-${p.code}`} />
+                              <button onClick={() => applyCreds(r.user_id)} disabled={busy || !changed} className={`${btn} bg-slate-800 border border-slate-700 text-slate-200 disabled:opacity-40`} data-testid={`person-apply-${p.code}`}>{pick(lang, 'Apply', 'اعمال')}</button>
+                            </div>
+                            {fresh[r.user_id]?.password && <p className="text-[11px] text-amber-200">{pick(lang, 'Password set on this page', 'رمز تنظیم‌شده در این صفحه')}: <b className="font-mono" data-testid={`person-fresh-${p.code}`}>{fresh[r.user_id].password}</b> <span className="text-slate-400">({pick(lang, 'visible only until you leave this page', 'فقط تا خروج از این صفحه دیده می‌شود')})</span></p>}
+                          </div>
+                        );
+                      })}
                       <select aria-label={`Add person at ${p.code}`} value="" onChange={(e) => addPerson(p.code, e.target.value)} className={inputCls} data-testid={`add-person-${p.code}`}>
                         <option value="">{peopleOf(p.code).length ? pick(lang, '+ another person (shift)', '+ فرد دیگر (شیفت)') : pick(lang, '+ choose the person counting here', '+ فرد شمارشگر این ایستگاه را انتخاب کنید')}</option>
                         {observers.filter((o) => !peopleOf(p.code).some((x) => x.r.user_id === o.id)).map((o) => <option key={o.id} value={o.id}>{o.full_name} (@{o.username})</option>)}
                       </select>
+                      {np?.code === p.code ? (
+                        <div className="rounded-xl border border-slate-700 p-2 space-y-1.5" data-testid={`np-form-${p.code}`}>
+                          <input aria-label="Full name" placeholder={pick(lang, 'Full name', 'نام و نام خانوادگی')} value={np.full_name} onChange={(ev) => setNp({ ...np, full_name: ev.target.value })} className={inputCls} data-testid="np-name" />
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <input aria-label="Username" placeholder={pick(lang, 'username', 'نام کاربری')} value={np.username} onChange={(ev) => setNp({ ...np, username: ev.target.value.toLowerCase() })} className={`${inputCls} font-mono`} data-testid="np-username" />
+                            <input aria-label="Password" placeholder={pick(lang, 'password', 'رمز')} autoComplete="off" value={np.password} onChange={(ev) => setNp({ ...np, password: ev.target.value })} className={`${inputCls} font-mono`} data-testid="np-password" />
+                          </div>
+                          <p className="text-[10px] text-slate-400">{pick(lang, 'Suggested: username = point code, password = 2 digits (an observer password may be as short as 2 characters). Edit freely.', 'پیشنهاد: نام کاربری = کد ایستگاه، رمز = ۲ رقم (رمز آمارگیر می‌تواند ۲ نویسه باشد). آزادانه ویرایش کنید.')}</p>
+                          <div className="flex gap-2">
+                            <button onClick={createPersonAt} disabled={busy || !np.full_name.trim() || np.username.trim().length < 2 || np.password.length < 2} className={`${btn} bg-teal-500 text-slate-950 disabled:opacity-40`} data-testid="np-create"><UserPlus className="w-4 h-4" />{pick(lang, 'Create and place here', 'ساخت و قراردادن اینجا')}</button>
+                            <button onClick={() => setNp(null)} className={`${btn} bg-slate-800 border border-slate-700 text-slate-300`}>{pick(lang, 'Cancel', 'انصراف')}</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button onClick={() => openNewPerson(p.code)} className={`${btn} w-full justify-center bg-slate-800 border border-slate-700 text-slate-200`} data-testid={`new-person-${p.code}`}><UserPlus className="w-4 h-4 text-teal-400" />{pick(lang, 'New person for this point (create account)', 'فرد جدید برای این ایستگاه (ساخت حساب)')}</button>
+                      )}
                     </div>
                   </div>
                 ))}
               </div>
 
-              <div className="rounded-2xl border border-slate-800 bg-slate-950 p-3 space-y-2" data-testid="quick-person">
-                <h4 className="text-xs font-bold text-white flex items-center gap-2"><UserPlus className="w-4 h-4 text-teal-400" />{pick(lang, 'New person: create an account and place them at a point', 'فرد جدید: ساخت حساب و قراردادن در یک ایستگاه')}</h4>
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-                  <input aria-label="Full name" placeholder={pick(lang, 'Full name', 'نام و نام خانوادگی')} value={person.full_name} onChange={(e) => setPerson({ ...person, full_name: e.target.value })} className={inputCls} data-testid="qp-name" />
-                  <input aria-label="Username" placeholder={pick(lang, 'username (e.g. e1)', 'نام کاربری (مثلاً e1)')} value={person.username} onChange={(e) => setPerson({ ...person, username: e.target.value.toLowerCase() })} className={inputCls} data-testid="qp-username" />
-                  <input aria-label="Password" type="password" autoComplete="new-password" placeholder={pick(lang, 'password (min 2)', 'گذرواژه (حداقل ۲)')} value={person.password} onChange={(e) => setPerson({ ...person, password: e.target.value })} className={inputCls} data-testid="qp-password" />
-                  <select aria-label="Point" value={person.point} onChange={(e) => setPerson({ ...person, point: e.target.value })} className={inputCls} data-testid="qp-point"><option value="">{pick(lang, 'Point…', 'ایستگاه…')}</option>{points.map((p) => <option key={p.code} value={p.code}>{p.code}</option>)}</select>
-                  <button onClick={createPerson} disabled={busy || !person.full_name || !person.username || person.password.length < 2} className={`${btn} bg-slate-800 border border-slate-700 text-slate-200 justify-center`} data-testid="qp-create"><UserPlus className="w-4 h-4" />{pick(lang, 'Create', 'ساخت')}</button>
-                </div>
-              </div>
             </section>
 
             <section className="bg-slate-900 rounded-3xl p-5 border border-slate-800 space-y-3">
@@ -274,9 +331,10 @@ export const StudySetup: React.FC<Props> = ({ lang, study, onChanged }) => {
               )}
             </section>
 
-            <div className="sticky bottom-3 flex flex-wrap items-center gap-3 bg-slate-900/95 border border-slate-700 rounded-2xl p-3 shadow-2xl">
+            <div className="sm:sticky bottom-3 flex flex-wrap items-center gap-3 bg-slate-900/95 border border-slate-700 rounded-2xl p-3 shadow-2xl">
               <button onClick={saveAll} disabled={busy} className={`${btn} bg-teal-500 text-slate-950`} data-testid="save-all"><Save className="w-4 h-4" />{pick(lang, 'Save everything (points, distances, people)', 'ذخیرهٔ همه (ایستگاه‌ها، مسافت‌ها، افراد)')}</button>
               <button onClick={() => window.print()} className={`${btn} bg-slate-800 border border-slate-700 text-slate-200`} data-testid="print-sheet"><Printer className="w-4 h-4" />{pick(lang, 'Print team sheet', 'چاپ برگهٔ تیم میدانی')}</button>
+              <label className="flex items-center gap-1.5 text-[11px] text-slate-300"><input type="checkbox" checked={showCreds} onChange={(e) => setShowCreds(e.target.checked)} data-testid="sheet-creds" />{pick(lang, 'print the passwords I set on this page', 'چاپ رمزهایی که در همین صفحه تنظیم کرده‌ام')}</label>
               <span className="text-[11px] text-slate-400">{pick(lang, 'Set the study ACTIVE (above) when everyone is in place.', 'وقتی همه در جای خود هستند، طرح را ACTIVE کنید (بالا).')}</span>
             </div>
           </>
@@ -287,12 +345,12 @@ export const StudySetup: React.FC<Props> = ({ lang, study, onChanged }) => {
         <section className="hidden print:block bg-white text-black p-8" data-testid="team-sheet" dir={lang === 'fa' ? 'rtl' : 'ltr'}>
           <h1 className="text-xl font-black">{pick(lang, 'Field team sheet', 'برگهٔ تیم میدانی')} - {study.name}</h1>
           <p className="text-sm">{study.study_date} · {study.start_time}-{study.end_time} · {study.timezone}</p>
-          <p className="text-sm mb-3">{pick(lang, 'Sign in at', 'ورود از نشانی')}: <b>{window.location.origin}</b> · {pick(lang, 'Open the "Field Collector" tab; your station is pinned at the top. Passwords are handed over separately.', 'تب «ثبت میدانی» را باز کنید؛ ایستگاه شما بالای صفحه قفل است. گذرواژه‌ها جداگانه تحویل داده می‌شوند.')}</p>
+          <p className="text-sm mb-3">{pick(lang, 'Sign in at', 'ورود از نشانی')}: <b>{window.location.origin}</b> · {pick(lang, 'Open the "Field Collector" tab; your station is pinned at the top.', 'تب «ثبت میدانی» را باز کنید؛ ایستگاه شما بالای صفحه قفل است.')} {showCreds ? pick(lang, 'CONFIDENTIAL: this sheet contains passwords - hand it over personally and do not keep copies.', 'محرمانه: این برگه رمز دارد؛ حضوری تحویل دهید و نسخه نگه ندارید.') : pick(lang, 'Passwords are handed over separately.', 'گذرواژه‌ها جداگانه تحویل داده می‌شوند.')}</p>
           <table className="w-full border-collapse text-sm">
-            <thead><tr className="bg-gray-200">{[pick(lang, 'Point', 'ایستگاه'), pick(lang, 'Type', 'نوع'), pick(lang, 'Description', 'توضیح'), pick(lang, 'Map section', 'بخش نقشه'), pick(lang, 'Person (username)', 'فرد (نام کاربری)'), pick(lang, 'Signature', 'امضا')].map((h) => <th key={h} className="border border-black p-2 text-start">{h}</th>)}</tr></thead>
+            <thead><tr className="bg-gray-200">{[pick(lang, 'Point', 'ایستگاه'), pick(lang, 'Type', 'نوع'), pick(lang, 'Description', 'توضیح'), pick(lang, 'Map section', 'بخش نقشه'), showCreds ? pick(lang, 'Person (username / password)', 'فرد (نام کاربری / رمز)') : pick(lang, 'Person (username)', 'فرد (نام کاربری)'), pick(lang, 'Signature', 'امضا')].map((h) => <th key={h} className="border border-black p-2 text-start">{h}</th>)}</tr></thead>
             <tbody>{sheetRows.map(({ p, people }) => (
               <tr key={p.code}><td className="border border-black p-2 font-mono font-bold">{p.code}</td><td className="border border-black p-2">{p.point_type === 'ENTRY' ? pick(lang, 'Entry', 'ورودی') : pick(lang, 'Exit', 'خروجی')}</td><td className="border border-black p-2">{p.description}</td>
-                <td className="border border-black p-2">{maps.find((m) => m.id === (p.map_id ?? firstMap))?.name}</td><td className="border border-black p-2">{people.length ? people.map((u) => `${u.full_name} (${u.username})`).join('، ') : '—'}</td><td className="border border-black p-2 w-32" /></tr>
+                <td className="border border-black p-2">{maps.find((m) => m.id === (p.map_id ?? firstMap))?.name}</td><td className="border border-black p-2">{people.length ? people.map((u) => `${u.full_name} (${u.username}${showCreds && fresh[u.id]?.password ? ' / ' + fresh[u.id].password : ''})`).join('، ') : '—'}</td><td className="border border-black p-2 w-32" /></tr>
             ))}</tbody>
           </table>
         </section>

@@ -93,11 +93,12 @@ test('capture guide screenshots', async ({ browser }) => {
   // ---- people at the points (accounts created on the spot)
   const people: [string, string, string][] = [['علی احمدی', 'ali.ahmadi', 'E01'], ['حسین رضایی', 'hossein.rezaei', 'E02'], ['مریم کریمی', 'maryam.karimi', 'X01'], ['زهرا نوری', 'zahra.nouri', 'X02'], ['رضا محمدی', 'reza.mohammadi', 'E03'], ['سارا حسینی', 'sara.hosseini', 'X03']];
   for (const [name, user, point] of people) {
-    await admin.getByTestId('qp-name').fill(name);
-    await admin.getByTestId('qp-username').fill(user);
-    await admin.getByTestId('qp-password').fill(PW);
-    await admin.getByTestId('qp-point').selectOption(point);
-    await admin.getByTestId('qp-create').click();
+    await admin.getByTestId(`new-person-${point}`).click();
+    const form = admin.getByTestId(`np-form-${point}`);
+    await form.getByTestId('np-name').fill(name);
+    await form.getByTestId('np-username').fill(user);
+    await form.getByTestId('np-password').fill(PW);
+    await form.getByTestId('np-create').click();
     await expect(admin.getByTestId(`person-${point}`)).toContainText(name);
   }
   for (const [o, d, m] of [['E01', 'X01', '1200'], ['E01', 'X02', '1500'], ['E02', 'X01', '1500'], ['E02', 'X02', '1200']]) await admin.getByTestId(`dist-${o}-${d}`).fill(m);
@@ -112,8 +113,11 @@ test('capture guide screenshots', async ({ browser }) => {
   await mark(admin, 'add-entry', 'add-exit', 'point-card-E01', 'add-person-E01');
   await elShot(admin, 'points-panel', '06-points');
   await admin.evaluate(() => document.querySelectorAll<HTMLElement>('[data-testid]').forEach((e) => { e.style.outline = ''; }));
-  await mark(admin, 'quick-person', 'qp-create');
-  await elShot(admin, 'quick-person', '07-quick-person');
+  await admin.getByTestId('new-person-E01').click();   // the form that opens inside the card (suggested username and password)
+  await admin.getByTestId('np-name').fill('فرد دوم (شیفت عصر)');
+  await mark(admin, 'np-username', 'np-password', 'np-create', 'person-username-E01', 'person-password-E01', 'person-apply-E01');
+  await elShot(admin, 'point-card-E01', '07-quick-person');
+  await admin.getByRole('button', { name: /Cancel|انصراف/ }).first().click();
   await admin.evaluate(() => document.querySelectorAll<HTMLElement>('[data-testid]').forEach((e) => { e.style.outline = ''; }));
   await mark(admin, 'save-all', 'print-sheet', 'study-status', 'audio-toggle');
   await admin.screenshot({ path: `${OUT}/08-save-bar.png`, clip: { x: 0, y: 60, width: 1280, height: 330 } });
