@@ -59,7 +59,9 @@ export default function App() {
     setErrorCount(status.errors);
   }, [user]);
 
+  const studyReq = useRef(0); // only the most recent request may update the screen: picking another study while the first load is still running must win
   const loadStudyData = useCallback(async (id: string, u: User) => {
+    const my = ++studyReq.current;
     try {
       setLoadError(null);
       const [s, obs, rep] = await Promise.all([
@@ -67,6 +69,7 @@ export default function App() {
         api<VehicleObservation[]>('GET', `/studies/${id}/observations`),
         u.role !== 'OBSERVER' ? api<Report>('POST', `/studies/${id}/match`, {}) : Promise.resolve(null),
       ]);
+      if (my !== studyReq.current) return;
       setStudy(s);
       setObservations(obs);
       setReport(rep);

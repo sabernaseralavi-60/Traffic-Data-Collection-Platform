@@ -284,7 +284,11 @@ test.describe('supervisor and administrator', () => {
     await expect(page.getByTestId('obs-row-246').getByTestId('play-246')).toBeVisible();
     await expect(page.getByTestId('obs-row-voice')).toHaveCount(2);
     page.on('dialog', (d) => d.accept());                                               // leave the shared demo study as we found it
-    for (const sel of ['obs-row-246', 'obs-row-voice', 'obs-row-voice']) await page.getByTestId(sel).first().getByLabel(/undo entry|لغو ثبت/i).click();
+    for (const sel of ['obs-row-246', 'obs-row-voice', 'obs-row-voice']) {                // one at a time: wait until each row is really gone
+      const before = await page.getByTestId(sel).count();
+      await page.getByTestId(sel).first().getByLabel(/undo entry|لغو ثبت/i).click();
+      await expect(page.getByTestId(sel)).toHaveCount(before - 1);
+    }
     await expect(page.getByTestId('obs-row-voice')).toHaveCount(0);
   });
 
