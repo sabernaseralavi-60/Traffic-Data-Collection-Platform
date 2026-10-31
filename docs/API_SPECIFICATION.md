@@ -12,7 +12,7 @@ Errors: `{ "error": "...", "code": "..." }` (validation errors add `issues: [{pa
 | `GET/POST /users`, `PATCH /users/:id` | A (GET also S: observers only) | accounts, activate, reset password, role |
 | `GET /categories`, `POST /categories`, `PATCH /categories/:code` | any / A / A | configurable vehicle categories |
 | `GET /studies`, `POST /studies` | any (observer: assigned only) / A | list, create |
-| `GET/PATCH/DELETE /studies/:id` | visible / A / A | detail (points, routes, assignments), update (incl. schematic image data URL, PNG/JPG/SVG <= 1 MB), delete (no data unless demo) |
+| `GET/PATCH/DELETE /studies/:id` | visible / A / A | detail (points, routes, assignments), update (name, times, status, retention, audio on/off), delete (no data unless demo) |
 | `POST /studies/:id/maps`, `PATCH/DELETE /studies/:id/maps/:mapId` | A | map sections of a study (name, image data URL PNG/JPG/SVG <= 1 MB; max 8; the last one cannot be deleted; points of a deleted section move to the first remaining one) |
 | `GET /studies/:id/maps/:mapId/image` | visible | the map image as binary (never inlined in JSON; sandboxing CSP header) |
 | `PUT /studies/:id/points` | A | points + route distances (points in use cannot be removed or change type) |

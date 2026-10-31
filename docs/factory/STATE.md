@@ -26,6 +26,9 @@
 | 2026-10-31 | Demo data only in dev or SEED_DEMO=true; labelled DEMO | seed always | honesty (F-017) |
 | 2026-10-31 | First production start requires ADMIN_PASSWORD and SESSION_SECRET (fail closed) | defaults | no default credentials |
 
+## Added at the owner's request (2026-10-31)
+Several road-map sections per study; entries/exits marked on them; one (or more, shifts) person per point with on-the-spot accounts; printable team sheet; voice clip per passage (per-study switch) with supervisor playback, correction and undo; Persian Word user guide (docs/TrafficLab_User_Guide_FA.docx).
+
 ## Open questions that really need the owner
 - Custom domain (optional), and whether the owner wants the demo accounts removed before real data is collected.
 - The photo and the municipality wording (F-022): confirm authorisation before the repo is shared widely.
