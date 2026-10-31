@@ -2,7 +2,9 @@ import fs from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 
 const DEMO_PW = process.env.E2E_DEMO_PASSWORD ?? 'Demo-pass-1';
+const CREDS: Record<string, string> = JSON.parse(process.env.E2E_CREDS ?? '{}'); // per-account passwords when running against a deployed instance
 const ADMIN_PW = process.env.E2E_ADMIN_PASSWORD ?? 'Admin-pass-1';
+const pw = (u: string) => CREDS[u] ?? (u === 'ad' ? ADMIN_PW : DEMO_PW);
 const SHOTS = 'e2e/screenshots';
 fs.mkdirSync(SHOTS, { recursive: true });
 
@@ -29,7 +31,7 @@ test.describe('login and roles', () => {
   test('wrong password is refused with a clear message; there is no user switcher', async ({ page }) => {
     await page.goto('/');
     await shot(page, 'login', test.info().project.name);
-    await page.getByTestId('login-username').fill('observer01');
+    await page.getByTestId('login-username').fill('e1');
     await page.getByTestId('login-password').fill('wrong-password');
     await page.getByTestId('login-submit').click();
     await expect(page.getByTestId('login-error')).toContainText(/wrong username or password/i);
@@ -37,7 +39,7 @@ test.describe('login and roles', () => {
   });
 
   test('observer sees only the collector and cannot call admin APIs', async ({ page }) => {
-    await login(page, 'observer01', DEMO_PW);
+    await login(page, 'e1', pw('e1'));
     await expect(page.getByTestId('tab-collector')).toBeVisible();
     for (const tab of ['accounts', 'studies', 'matching', 'reports']) await expect(page.getByTestId(`tab-${tab}`)).toHaveCount(0);
     const codes = await page.evaluate(async () => {
@@ -51,7 +53,7 @@ test.describe('login and roles', () => {
 test.describe('field collection', () => {
   test('assigned station is pinned; 3 digits are required; record via keypad; leading zero kept', async ({ page }) => {
     const project = test.info().project.name;
-    await login(page, 'observer01', DEMO_PW);
+    await login(page, 'e1', pw('e1'));
     await expect(page.getByTestId('station-code')).toHaveText('E01');
     await expect(page.getByTestId('station-banner')).toContainText('ENTRY');
     await page.getByTestId('key-7').click();
@@ -69,7 +71,7 @@ test.describe('field collection', () => {
 
   test('offline: the sighting is kept on the device with its original time, then synced when the connection returns', async ({ page, context }) => {
     const project = test.info().project.name;
-    await login(page, 'observer03', DEMO_PW);
+    await login(page, 'e2', pw('e2'));
     await expect(page.getByTestId('station-code')).toHaveText('E02');
     await context.setOffline(true);
     await expect(page.getByText(/offline/i).first()).toBeVisible();
@@ -99,7 +101,7 @@ test.describe('field collection', () => {
 test.describe('supervisor and administrator', () => {
   test('dashboard shows computed KPIs; ambiguous case is reviewed and stays resolved', async ({ page }) => {
     const project = test.info().project.name;
-    await login(page, 'admin', ADMIN_PW);
+    await login(page, 'ad', pw('ad'));
     await useDemoStudy(page);
     await expect(page.getByTestId('kpi-matched')).toContainText(/Matched Journeys\s*[1-9]/);
     await shot(page, 'dashboard', project);
@@ -126,7 +128,7 @@ test.describe('supervisor and administrator', () => {
   });
 
   test('exports download as real files', async ({ page }) => {
-    await login(page, 'supervisor', DEMO_PW);
+    await login(page, 'sv', pw('sv'));
     await useDemoStudy(page);
     await page.getByTestId('tab-reports').click();
     await expect(page.getByTestId('report-article')).toContainText(/Origin/i);
@@ -139,7 +141,7 @@ test.describe('supervisor and administrator', () => {
   test('admin sets up a study: two map sections, entries/exits, a person at each, team sheet, activate', async ({ page }) => {
     const project = test.info().project.name;
     const tag = `${project}${Date.now().toString(36)}`;
-    await login(page, 'admin', ADMIN_PW);
+    await login(page, 'ad', pw('ad'));
     await page.getByTestId('tab-studies').click();
     await page.getByTestId('new-study-name').fill(`E2E study ${project}`);
     await page.getByTestId('create-study').click();
@@ -192,7 +194,7 @@ test.describe('supervisor and administrator', () => {
   test('voice clip per passage: observer records, supervisor listens and corrects', async ({ page }) => {
     test.skip(!!process.env.E2E_BASE_URL && false, 'runs live too');
     const project = test.info().project.name;
-    await login(page, 'observer02', DEMO_PW);
+    await login(page, 'x1', pw('x1'));
     await expect(page.getByTestId('station-code')).toHaveText('X01');
     await page.getByTestId('voice-button').click();
     await page.waitForTimeout(1800);                          // the fake microphone produces a tone
@@ -205,7 +207,7 @@ test.describe('supervisor and administrator', () => {
     await page.getByTestId('logout').click();
     await expect(page.getByTestId('login-form')).toBeVisible(); // wait until the sign-out request has finished before navigating
 
-    await login(page, 'supervisor', DEMO_PW);
+    await login(page, 'sv', pw('sv'));
     await useDemoStudy(page);
     await page.getByTestId('tab-observations').click();
     const row = page.getByTestId('obs-row-888');
@@ -242,7 +244,7 @@ test.describe('supervisor and administrator', () => {
     await page.getByRole('button', { name: 'فارسی' }).click();
     await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
     await shot(page, 'login-fa', project);
-    await login(page, 'observer02', DEMO_PW);
+    await login(page, 'x1', pw('x1'));
     await expect(page.getByTestId('station-code')).toHaveText('X01');
     await shot(page, 'collector-fa', project);
   });

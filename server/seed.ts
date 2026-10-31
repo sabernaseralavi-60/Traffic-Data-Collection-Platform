@@ -84,7 +84,7 @@ export async function createDemoStudy(q: Query, adminId: string, observers: Reco
   for (const [o, d, m] of [['E01', 'X01', 2500], ['E01', 'X02', 3100], ['E02', 'X01', 2800], ['E02', 'X02', 1900]] as const) {
     await q(`INSERT INTO route_distances (study_id, origin_code, destination_code, distance_meters) VALUES ($1,$2,$3,$4)`, [sid, o, d, m]);
   }
-  for (const [username, point] of [['observer01', 'E01'], ['observer02', 'X01'], ['observer03', 'E02'], ['observer04', 'X02']] as const) {
+  for (const [username, point] of [['e1', 'E01'], ['x1', 'X01'], ['e2', 'E02'], ['x2', 'X02']] as const) {
     await q(`INSERT INTO study_assignments (study_id, user_id, point_code) VALUES ($1,$2,$3)`, [sid, observers[username], point]);
   }
   await resetDemoObservations(q, sid);
@@ -109,9 +109,9 @@ export async function bootstrap(db: Db, cfg: Config): Promise<BootstrapInfo> {
   await db.tx(async (q) => {
     const adminId = await createUser(q, cfg.adminUsername, 'Administrator', 'ADMIN', adminPw);
     if (!demo) return;
-    await createUser(q, 'supervisor', 'Eng. Kaveh Mirzai (Supervisor)', 'SUPERVISOR', seedPw!);
+    await createUser(q, 'sv', 'Eng. Kaveh Mirzai (Supervisor)', 'SUPERVISOR', seedPw!);
     const obs: Record<string, string> = {};
-    for (const [u, name] of [['observer01', 'Ali Rezaei'], ['observer02', 'Maryam Moradi'], ['observer03', 'Hossein Tehrani'], ['observer04', 'Zahra Karimi']]) {
+    for (const [u, name] of [['e1', 'Ali Rezaei'], ['x1', 'Maryam Moradi'], ['e2', 'Hossein Tehrani'], ['x2', 'Zahra Karimi']]) {
       obs[u] = await createUser(q, u, name, 'OBSERVER', seedPw!);
     }
     await createDemoStudy(q, adminId, obs);

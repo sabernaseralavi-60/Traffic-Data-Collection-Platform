@@ -42,7 +42,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     engineUrl: e.ENGINE_URL || (e.VERCEL_PROJECT_PRODUCTION_URL && e.ENGINE_TOKEN ? `https://${e.VERCEL_PROJECT_PRODUCTION_URL}/api/engine` : null),
     engineToken: e.ENGINE_TOKEN || null,
     engineTimeoutMs: Number(e.ENGINE_TIMEOUT_MS) || 30_000,
-    adminUsername: (e.ADMIN_USERNAME || 'admin').toLowerCase(),
+    adminUsername: (e.ADMIN_USERNAME || 'ad').toLowerCase(),
     adminPassword: e.ADMIN_PASSWORD || null,
     seedPassword: e.SEED_PASSWORD || null,
     seedDemo: e.SEED_DEMO ? e.SEED_DEMO === 'true' : !prod,

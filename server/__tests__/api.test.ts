@@ -61,8 +61,8 @@ describe('authentication and roles', () => {
 
   it('login sets an HttpOnly session cookie; wrong password is refused', async () => {
     const c = new Client();
-    expect((await c.call('POST', '/api/v1/auth/login', { username: 'admin', password: 'nope-nope' })).status).toBe(401);
-    const ok = await c.call('POST', '/api/v1/auth/login', { username: 'ADMIN', password: ADMIN_PW });
+    expect((await c.call('POST', '/api/v1/auth/login', { username: 'ad', password: 'nope-nope' })).status).toBe(401);
+    const ok = await c.call('POST', '/api/v1/auth/login', { username: 'AD', password: ADMIN_PW });
     expect(ok.status).toBe(200);
     expect(ok.headers.get('set-cookie')).toMatch(/HttpOnly/i);
     expect(ok.headers.get('set-cookie')).toMatch(/SameSite=Lax/i);
@@ -70,13 +70,13 @@ describe('authentication and roles', () => {
   });
 
   it('state-changing requests need the CSRF header', async () => {
-    const admin = await as('admin', ADMIN_PW);
+    const admin = await as('ad', ADMIN_PW);
     const r = await fetch(base + '/api/v1/studies', { method: 'POST', headers: { 'content-type': 'application/json', cookie: admin.cookie }, body: '{}' });
     expect(r.status).toBe(403);
   });
 
   it('a forged or tampered cookie is not a session', async () => {
-    const admin = await as('admin', ADMIN_PW);
+    const admin = await as('ad', ADMIN_PW);
     const bad = new Client();
     bad.cookie = admin.cookie.slice(0, -3) + 'abc';
     expect((await bad.call('GET', '/api/v1/auth/me')).status).toBe(401);
@@ -84,16 +84,16 @@ describe('authentication and roles', () => {
 
   it('locks the account after 5 failed logins', async () => {
     const c = new Client();
-    for (let i = 0; i < 5; i++) expect((await c.call('POST', '/api/v1/auth/login', { username: 'observer04', password: 'wrong-wrong' })).status).toBe(401);
-    const r = await c.call('POST', '/api/v1/auth/login', { username: 'observer04', password: PW });
+    for (let i = 0; i < 5; i++) expect((await c.call('POST', '/api/v1/auth/login', { username: 'x2', password: 'wrong-wrong' })).status).toBe(401);
+    const r = await c.call('POST', '/api/v1/auth/login', { username: 'x2', password: PW });
     expect(r.status).toBe(429);
-    await db.query(`UPDATE users SET locked_until = NULL, failed_logins = 0 WHERE username = 'observer04'`);
+    await db.query(`UPDATE users SET locked_until = NULL, failed_logins = 0, lock_count = 0 WHERE username = 'x2'`);
   });
 
   it('role matrix: replaying admin endpoints with lower roles is refused', async () => {
-    const obs = await as('observer01');
-    const sup = await as('supervisor');
-    const admin = await as('admin', ADMIN_PW);
+    const obs = await as('e1');
+    const sup = await as('sv');
+    const admin = await as('ad', ADMIN_PW);
     const study = (await admin.call('GET', '/api/v1/studies')).data[0];
     const calls: [string, string, unknown][] = [
       ['POST', '/api/v1/studies', { name: 'x', study_date: '2026-10-31' }],
@@ -112,7 +112,7 @@ describe('authentication and roles', () => {
   });
 
   it('administrators cannot lock themselves out', async () => {
-    const admin = await as('admin', ADMIN_PW);
+    const admin = await as('ad', ADMIN_PW);
     const me = (await admin.call('GET', '/api/v1/auth/me')).data.user;
     expect((await admin.call('PATCH', `/api/v1/users/${me.id}`, { active: false })).status).toBe(409);
     expect((await admin.call('PATCH', `/api/v1/users/${me.id}`, { role: 'SUPERVISOR' })).status).toBe(409);
@@ -121,9 +121,9 @@ describe('authentication and roles', () => {
 
 describe('observer scope and recording rules', () => {
   it('an observer sees only the studies they are assigned to', async () => {
-    const admin = await as('admin', ADMIN_PW);
+    const admin = await as('ad', ADMIN_PW);
     const other = (await admin.call('POST', '/api/v1/studies', { name: 'Private study', study_date: '2026-11-01', status: 'ACTIVE' })).data;
-    const obs = await as('observer01');
+    const obs = await as('e1');
     const list = (await obs.call('GET', '/api/v1/studies')).data;
     expect(list.map((s: any) => s.id)).not.toContain(other.id);
     expect((await obs.call('GET', `/api/v1/studies/${other.id}`)).status).toBe(404);
@@ -131,7 +131,7 @@ describe('observer scope and recording rules', () => {
   });
 
   it('point and observer come from the server, never from the request', async () => {
-    const obs = await as('observer01');
+    const obs = await as('e1');
     const me = (await obs.call('GET', '/api/v1/auth/me')).data;
     const a = me.assignments[0];
     expect(a.point_code).toBe('E01');
@@ -146,7 +146,7 @@ describe('observer scope and recording rules', () => {
   });
 
   it('requires exactly three digits, keeps leading zeros, accepts Persian digits', async () => {
-    const obs = await as('observer01');
+    const obs = await as('e1');
     const sid = (await obs.call('GET', '/api/v1/auth/me')).data.assignments[0].study_id;
     expect((await obs.call('POST', '/api/v1/observations', { study_id: sid, plate_suffix: '7', idempotency_key: 'short-suffix-1' })).data.code).toBe('invalid_suffix');
     expect((await obs.call('POST', '/api/v1/observations', { study_id: sid, plate_suffix: '1234', idempotency_key: 'long-suffix-01' })).data.code).toBe('invalid_suffix');
@@ -156,7 +156,7 @@ describe('observer scope and recording rules', () => {
   });
 
   it('duplicate submissions are idempotent; repeated suffixes with new keys are kept', async () => {
-    const obs = await as('observer01');
+    const obs = await as('e1');
     const sid = (await obs.call('GET', '/api/v1/auth/me')).data.assignments[0].study_id;
     const body = { study_id: sid, plate_suffix: '555', idempotency_key: 'idem-key-0001' };
     const first = await obs.call('POST', '/api/v1/observations', body);
@@ -169,14 +169,14 @@ describe('observer scope and recording rules', () => {
   });
 
   it('rejects timestamps from the future', async () => {
-    const obs = await as('observer01');
+    const obs = await as('e1');
     const sid = (await obs.call('GET', '/api/v1/auth/me')).data.assignments[0].study_id;
     const r = await obs.call('POST', '/api/v1/observations', { study_id: sid, plate_suffix: '321', observed_at: new Date(Date.now() + 3600_000).toISOString(), idempotency_key: 'future-time-01' });
     expect(r.data.code).toBe('future_timestamp');
   });
 
   it('batch sync reports every item and never drops one silently', async () => {
-    const obs = await as('observer03');
+    const obs = await as('e2');
     const sid = (await obs.call('GET', '/api/v1/auth/me')).data.assignments[0].study_id;
     const t = '2026-10-30T09:00:00+03:30';
     const r = await obs.call('POST', '/api/v1/observations/batch-sync', {
@@ -196,8 +196,8 @@ describe('observer scope and recording rules', () => {
   });
 
   it('observers undo their own entry within the window; others cannot touch it', async () => {
-    const o1 = await as('observer01');
-    const o2 = await as('observer02');
+    const o1 = await as('e1');
+    const o2 = await as('x1');
     const sid = (await o1.call('GET', '/api/v1/auth/me')).data.assignments[0].study_id;
     const rec = (await o1.call('POST', '/api/v1/observations', { study_id: sid, plate_suffix: '808', idempotency_key: 'void-me-00001' })).data.observation;
     expect((await o2.call('POST', `/api/v1/observations/${rec.id}/void`, {})).status).toBe(404);
@@ -210,8 +210,8 @@ describe('observer scope and recording rules', () => {
   });
 
   it('an observer cannot undo after the window; a supervisor can', async () => {
-    const o1 = await as('observer01');
-    const sup = await as('supervisor');
+    const o1 = await as('e1');
+    const sup = await as('sv');
     const sid = (await o1.call('GET', '/api/v1/auth/me')).data.assignments[0].study_id;
     const rec = (await o1.call('POST', '/api/v1/observations', { study_id: sid, plate_suffix: '809', idempotency_key: 'old-entry-0001' })).data.observation;
     await db.query(`UPDATE observations SET received_at = now() - interval '30 minutes' WHERE id = $1`, [rec.id]);
@@ -224,8 +224,8 @@ describe('full MVP acceptance scenario (spec section 19)', () => {
   let admin: Client, o1: Client, o2: Client, sup: Client, studyId: string;
 
   beforeAll(async () => {
-    admin = await as('admin', ADMIN_PW);
-    sup = await as('supervisor');
+    admin = await as('ad', ADMIN_PW);
+    sup = await as('sv');
     const s = (await admin.call('POST', '/api/v1/studies', { name: 'Acceptance', study_date: '2026-10-30', status: 'ACTIVE', timezone: 'Asia/Tehran' })).data;
     studyId = s.id;
     const pts = [['E01', 'ENTRY', 25, 20], ['E02', 'ENTRY', 20, 70], ['X01', 'EXIT', 80, 25], ['X02', 'EXIT', 75, 80]] as const;
@@ -415,7 +415,7 @@ describe('full MVP acceptance scenario (spec section 19)', () => {
 
 describe('demo data and audit', () => {
   it('the seeded scenario is flagged DEMO and reproduces the 387 journey in Tehran local time', async () => {
-    const sup = await as('supervisor');
+    const sup = await as('sv');
     const demo = (await sup.call('GET', '/api/v1/studies')).data.find((s: any) => s.is_demo);
     expect(demo.name).toMatch(/^DEMO/);
     const r = (await sup.call('POST', `/api/v1/studies/${demo.id}/match`, {})).data;
@@ -426,7 +426,7 @@ describe('demo data and audit', () => {
   });
 
   it('demo reset only works for the demo study', async () => {
-    const admin = await as('admin', ADMIN_PW);
+    const admin = await as('ad', ADMIN_PW);
     const list = (await admin.call('GET', '/api/v1/studies')).data;
     const real = list.find((s: any) => !s.is_demo);
     expect((await admin.call('POST', `/api/v1/studies/${real.id}/seed-scenario`, {})).status).toBe(409);
@@ -435,7 +435,7 @@ describe('demo data and audit', () => {
   });
 
   it('administrator actions are written to the audit log', async () => {
-    const admin = await as('admin', ADMIN_PW);
+    const admin = await as('ad', ADMIN_PW);
     const log = (await admin.call('GET', '/api/v1/audit?limit=200')).data;
     const actions = new Set(log.map((l: any) => l.action));
     for (const a of ['login', 'login_failed', 'study_created', 'points_saved', 'user_created', 'observation_voided', 'review_reviewed', 'export_xlsx']) expect(actions.has(a), a).toBe(true);
@@ -445,5 +445,66 @@ describe('demo data and audit', () => {
     const r = await new Client().call('GET', '/healthz');
     expect(r.status).toBe(200);
     expect(r.data).toMatchObject({ ok: true, database: 'pglite', engine: 'ok' });
+  });
+});
+
+
+describe('short credentials with compensating controls', () => {
+  it('2-character usernames and 2-digit observer passwords work; privileged roles need longer secrets', async () => {
+    const admin = await as('ad', ADMIN_PW);
+    const mk = (b: object) => admin.call('POST', '/api/v1/users', b);
+    expect((await mk({ username: 'k1', full_name: 'Short Observer', role: 'OBSERVER', password: '47' })).status).toBe(201);
+    expect((await mk({ username: 'k2', full_name: 'Short Observer', role: 'OBSERVER', password: '4' })).status).toBe(400);
+    expect((await mk({ username: 'k3', full_name: 'Short Supervisor', role: 'SUPERVISOR', password: '123' })).status).toBe(400);
+    expect((await mk({ username: 'k3', full_name: 'Short Supervisor', role: 'SUPERVISOR', password: '1234' })).status).toBe(201);
+    const weakAdmin = await mk({ username: 'k4', full_name: 'Short Admin', role: 'ADMIN', password: '12345' });
+    expect(weakAdmin.status).toBe(400);
+    expect(JSON.stringify(weakAdmin.data)).toContain('at least 6');
+    expect((await mk({ username: 'k4', full_name: 'Short Admin', role: 'ADMIN', password: 'a1b2c3' })).status).toBe(201);
+    expect((await mk({ username: 'x', full_name: 'One char', role: 'OBSERVER', password: '47' })).status).toBe(400); // 1 character is too short
+    await as('k1', '47');
+  });
+
+  it('Persian and Arabic digits are the same as Latin digits in usernames and passwords', async () => {
+    const admin = await as('ad', ADMIN_PW);
+    expect((await admin.call('POST', '/api/v1/users', { username: 'p5', full_name: 'Persian Pw', role: 'OBSERVER', password: '۴۷' })).status).toBe(201);
+    await as('p5', '47');
+    await as('p5', '۴۷');
+    await as('p5', '٤٧');
+    const c = new Client();
+    expect((await c.call('POST', '/api/v1/auth/login', { username: 'p5', password: '48' })).status).toBe(401);
+  });
+
+  it('an administrator can rename an account; the name stays unique; the session survives', async () => {
+    const admin = await as('ad', ADMIN_PW);
+    const list = (await admin.call('GET', '/api/v1/users')).data;
+    const k1 = list.find((u: any) => u.username === 'k1');
+    expect((await admin.call('PATCH', `/api/v1/users/${k1.id}`, { username: 'k9' })).data.username).toBe('k9');
+    expect((await admin.call('PATCH', `/api/v1/users/${k1.id}`, { username: 'k3' })).status).toBe(409);
+    await as('k9', '47');
+    expect((await new Client().call('POST', '/api/v1/auth/login', { username: 'k1', password: '47' })).status).toBe(401);
+    // a password change must respect the minimum of the (possibly new) role
+    expect((await admin.call('PATCH', `/api/v1/users/${k1.id}`, { role: 'SUPERVISOR', password: '12' })).status).toBe(400);
+    expect((await admin.call('PATCH', `/api/v1/users/${k1.id}`, { password: '59' })).status).toBe(200);
+    await as('k9', '59');
+  });
+
+  it('every further lock lasts longer, so a 2-digit password cannot be guessed by waiting', async () => {
+    const c = new Client();
+    const fail = async () => { for (let i = 0; i < 5; i++) await c.call('POST', '/api/v1/auth/login', { username: 'k9', password: '00' }); };
+    const mins = async () => Number((await db.query(`SELECT extract(epoch from (locked_until - now())) / 60 AS m FROM users WHERE username = 'k9'`))[0].m);
+    await fail();
+    const first = await mins();
+    expect(first).toBeGreaterThan(13);
+    expect(first).toBeLessThan(16);
+    expect((await c.call('POST', '/api/v1/auth/login', { username: 'k9', password: '59' })).status).toBe(429); // right password, still locked
+    await db.query(`UPDATE users SET locked_until = NULL WHERE username = 'k9'`); // pretend the first lock expired
+    await fail();
+    const second = await mins();
+    expect(second).toBeGreaterThan(28);
+    expect(second).toBeLessThan(31);
+    await db.query(`UPDATE users SET locked_until = NULL WHERE username = 'k9'`);
+    await as('k9', '59'); // a correct login resets the escalation
+    expect((await db.query(`SELECT lock_count FROM users WHERE username = 'k9'`))[0].lock_count).toBe(0);
   });
 });

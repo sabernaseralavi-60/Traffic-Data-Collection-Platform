@@ -8,19 +8,34 @@ const timezone = z.string().max(60).refine((tz) => {
   try { new Intl.DateTimeFormat('en', { timeZone: tz }); return true; } catch { return false; }
 }, 'unknown time zone');
 
-export const loginSchema = z.object({ username: z.string().trim().min(1).max(64), password: z.string().min(1).max(200) });
+/** Persian/Arabic digits typed on a phone keyboard are the same digits: accounts work with either. */
+export const asciiDigits = (s: string) => s.replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06f0)).replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660));
+const text = (inner: z.ZodString) => z.preprocess((v) => (typeof v === 'string' ? asciiDigits(v) : v), inner);
+
+/** Short credentials are allowed where the damage is small: an observer can only add sightings at their own point. */
+export const MIN_PASSWORD: Record<'ADMIN' | 'SUPERVISOR' | 'OBSERVER', number> = { ADMIN: 6, SUPERVISOR: 4, OBSERVER: 2 };
+export const passwordTooShort = (role: keyof typeof MIN_PASSWORD, pw: string) =>
+  pw.length < MIN_PASSWORD[role] ? `Password for ${role} needs at least ${MIN_PASSWORD[role]} characters` : null;
+
+const usernameField = text(z.string().trim().toLowerCase().regex(/^[a-z0-9._-]{2,32}$/, 'username: 2-32 of a-z 0-9 . _ -'));
+export const loginSchema = z.object({ username: text(z.string().trim().min(1).max(64)), password: text(z.string().min(1).max(200)) });
 
 export const userCreateSchema = z.object({
-  username: z.string().trim().toLowerCase().regex(/^[a-z0-9._-]{3,32}$/, 'username: 3-32 of a-z 0-9 . _ -'),
+  username: usernameField,
   full_name: z.string().trim().min(1).max(100),
   role: z.enum(['ADMIN', 'SUPERVISOR', 'OBSERVER']),
-  password: z.string().min(8).max(200),
+  password: text(z.string().min(2).max(200)),
+}).superRefine((u, ctx) => {
+  const msg = passwordTooShort(u.role, u.password);
+  if (msg) ctx.addIssue({ code: 'custom', message: msg, path: ['password'] });
 });
+export const changePasswordSchema = z.object({ current_password: text(z.string().min(1).max(200)), new_password: text(z.string().min(2).max(200)) });
 export const userPatchSchema = z.object({
   full_name: z.string().trim().min(1).max(100).optional(),
   role: z.enum(['ADMIN', 'SUPERVISOR', 'OBSERVER']).optional(),
   active: z.boolean().optional(),
-  password: z.string().min(8).max(200).optional(),
+  password: text(z.string().min(2).max(200)).optional(),
+  username: usernameField.optional(),
 });
 
 export const studyCreateSchema = z.object({

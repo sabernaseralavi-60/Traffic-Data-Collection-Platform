@@ -11,11 +11,10 @@ import { EngineError, engineOptions, runEngine } from './engine.ts';
 import { resetDemoObservations } from './seed.ts';
 import {
   assignmentsSchema, batchSchema, categoryCreateSchema, correctSchema, mapCreateSchema, mapPatchSchema, categoryPatchSchema, loginSchema, matchSchema, observationSchema, pointsSchema,
-  reviewSchema, studyCreateSchema, studyPatchSchema, userCreateSchema, userPatchSchema, voidSchema, type MatchParams,
+  reviewSchema, studyCreateSchema, MIN_PASSWORD, passwordTooShort, changePasswordSchema, studyPatchSchema, userCreateSchema, userPatchSchema, voidSchema, type MatchParams,
 } from './validation.ts';
 import { buildWorkbook } from './xlsx.ts';
 
-const changePasswordSchema = z.object({ current_password: z.string().min(1).max(200), new_password: z.string().min(8).max(200) });
 const reviewWithClear = reviewSchema.extend({ decision: z.enum(['REVIEWED', 'REJECTED', 'CLEAR']) });
 const wrap = (fn: (req: Request, res: Response) => Promise<unknown>): RequestHandler => (req, res, next) => { fn(req, res).catch(next); };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -151,12 +150,15 @@ export function createApp(cfg: Config, db: Db) {
     if (!u || !u.active) { await verifyPassword(password, 'scrypt$16384$8$1$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=='); return fail(); }
     if (u.locked_until && new Date(u.locked_until) > new Date()) throw new HttpError(429, 'Account temporarily locked after repeated failures', 'locked');
     if (!(await verifyPassword(password, u.password_hash))) {
+      // 5 wrong passwords lock the account; every further lock lasts twice as long (15 min, 30 min, 1 h ... max 24 h), so a short
+      // password cannot be guessed by waiting out the lock. A correct login resets the counter.
       await q(`UPDATE users SET
-               locked_until = CASE WHEN failed_logins + 1 >= 5 THEN now() + interval '15 minutes' ELSE locked_until END,
+               locked_until = CASE WHEN failed_logins + 1 >= 5 THEN now() + LEAST(interval '24 hours', interval '15 minutes' * power(2, LEAST(lock_count, 10))) ELSE locked_until END,
+               lock_count = CASE WHEN failed_logins + 1 >= 5 THEN lock_count + 1 ELSE lock_count END,
                failed_logins = CASE WHEN failed_logins + 1 >= 5 THEN 0 ELSE failed_logins + 1 END WHERE id = $1`, [u.id]);
       return fail();
     }
-    await q('UPDATE users SET failed_logins = 0, locked_until = NULL WHERE id = $1', [u.id]);
+    await q('UPDATE users SET failed_logins = 0, lock_count = 0, locked_until = NULL WHERE id = $1', [u.id]);
     const { token, maxAgeMs } = signSession(cfg, { id: u.id as string, token_version: u.token_version as number });
     setSessionCookie(res, cfg, token, maxAgeMs);
     await audit({ id: u.id as string, username: u.username as string }, 'login', 'user', u.id);
@@ -184,6 +186,8 @@ export function createApp(cfg: Config, db: Db) {
 
   api.post('/auth/change-password', wrap(async (req, res) => {
     const body = changePasswordSchema.parse(req.body);
+    const short = passwordTooShort(req.user!.role, body.new_password);
+    if (short) throw new HttpError(400, short, 'weak_password');
     const [u] = await q('SELECT password_hash FROM users WHERE id = $1', [req.user!.id]);
     if (!(await verifyPassword(body.current_password, u.password_hash))) throw new HttpError(403, 'Current password is wrong', 'bad_credentials');
     const [{ token_version }] = await q('UPDATE users SET password_hash = $2, token_version = token_version + 1 WHERE id = $1 RETURNING token_version', [req.user!.id, await hashPassword(body.new_password)]);
@@ -220,9 +224,14 @@ export function createApp(cfg: Config, db: Db) {
       const [{ n }] = await q(`SELECT count(*)::int AS n FROM users WHERE role = 'ADMIN' AND active AND id <> $1`, [id]);
       if (n === 0) throw new HttpError(409, 'At least one active administrator is required', 'last_admin');
     }
+    if (b.password !== undefined) {
+      const short = passwordTooShort((b.role ?? cur.role) as keyof typeof MIN_PASSWORD, b.password);
+      if (short) throw new HttpError(400, short, 'weak_password');
+    }
     const sets: string[] = [];
     const vals: unknown[] = [id];
     const set = (col: string, v: unknown) => { vals.push(v); sets.push(`${col} = $${vals.length}`); };
+    if (b.username !== undefined) set('username', b.username);
     if (b.full_name !== undefined) set('full_name', b.full_name);
     if (b.role !== undefined) set('role', b.role);
     if (b.active !== undefined) set('active', b.active);
@@ -230,7 +239,8 @@ export function createApp(cfg: Config, db: Db) {
     if (b.password !== undefined || b.role !== undefined || b.active === false) sets.push('token_version = token_version + 1');
     if (!sets.length) throw new HttpError(400, 'Nothing to update', 'empty');
     const [u] = await q(`UPDATE users SET ${sets.join(', ')} WHERE id = $1 RETURNING id, username, full_name, role, active`, vals);
-    await audit(req.user, 'user_updated', 'user', id, { fields: Object.keys(b).map((k) => (k === 'password' ? 'password' : k)) });
+    if (b.password === undefined && b.username !== undefined && id === req.user!.id) { /* renaming yourself keeps the session */ }
+    await audit(req.user, 'user_updated', 'user', id, { fields: Object.keys(b) });
     res.json(u);
   }));
 

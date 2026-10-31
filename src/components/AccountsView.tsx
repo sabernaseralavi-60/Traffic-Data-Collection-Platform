@@ -11,6 +11,7 @@ interface Props {
   onCategoriesChanged: () => Promise<void>;
 }
 
+const MIN_PW: Record<string, number> = { ADMIN: 6, SUPERVISOR: 4, OBSERVER: 2 }; // same rule as the server: short secrets only where the damage is small
 const inputCls = 'w-full px-2.5 py-2 rounded-lg bg-slate-950 border border-slate-700 text-white text-xs focus:border-teal-400 focus:outline-none';
 
 export const AccountsView: React.FC<Props> = ({ lang, currentUser, onCategoriesChanged }) => {
@@ -37,10 +38,10 @@ export const AccountsView: React.FC<Props> = ({ lang, currentUser, onCategoriesC
       <section className="bg-slate-900 rounded-3xl p-5 border border-slate-800 space-y-3">
         <h2 className="text-sm font-bold text-white flex items-center gap-2"><Users className="w-4 h-4 text-teal-400" />{pick(lang, 'New account', 'حساب جدید')}</h2>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-          <input aria-label="Username" placeholder={pick(lang, 'username (a-z 0-9 . _ -)', 'نام کاربری (لاتین)')} value={nu.username} onChange={(e) => setNu({ ...nu, username: e.target.value.toLowerCase() })} className={inputCls} data-testid="new-username" />
+          <input aria-label="Username" placeholder={pick(lang, 'username (2+ chars, a-z 0-9)', 'نام کاربری (۲ نویسه به بالا، لاتین)')} value={nu.username} onChange={(e) => setNu({ ...nu, username: e.target.value.toLowerCase() })} className={inputCls} data-testid="new-username" />
           <input aria-label="Full name" placeholder={pick(lang, 'Full name', 'نام و نام خانوادگی')} value={nu.full_name} onChange={(e) => setNu({ ...nu, full_name: e.target.value })} className={inputCls} data-testid="new-fullname" />
           <select aria-label="Role" value={nu.role} onChange={(e) => setNu({ ...nu, role: e.target.value as UserRole })} className={inputCls}><option value="OBSERVER">OBSERVER</option><option value="SUPERVISOR">SUPERVISOR</option><option value="ADMIN">ADMIN</option></select>
-          <input aria-label="Password" type="password" autoComplete="new-password" placeholder={pick(lang, 'password (min 8)', 'گذرواژه (حداقل ۸)')} value={nu.password} onChange={(e) => setNu({ ...nu, password: e.target.value })} className={inputCls} data-testid="new-password" />
+          <input aria-label="Password" type="password" autoComplete="new-password" placeholder={pick(lang, `password (min ${MIN_PW[nu.role]})`, `گذرواژه (حداقل ${MIN_PW[nu.role]})`)} value={nu.password} onChange={(e) => setNu({ ...nu, password: e.target.value })} className={inputCls} data-testid="new-password" />
           <button onClick={() => act(async () => { await api('POST', '/users', nu); setNu({ username: '', full_name: '', role: 'OBSERVER', password: '' }); }, pick(lang, 'Account created', 'حساب ساخته شد'))} className="flex items-center justify-center gap-1.5 rounded-xl bg-teal-500 text-slate-950 text-xs font-bold" data-testid="create-user"><Plus className="w-4 h-4" />{pick(lang, 'Create', 'ساخت')}</button>
         </div>
         <p className="text-[11px] text-slate-500">{pick(lang, 'Assign observers to a study point under "Studies & Map".', 'تخصیص آمارگیر به ایستگاه در «طرح‌ها و نقشه» انجام می‌شود.')}</p>
@@ -55,7 +56,7 @@ export const AccountsView: React.FC<Props> = ({ lang, currentUser, onCategoriesC
               <td>{u.role}</td>
               <td className="text-slate-300">{u.assignments?.length ? u.assignments.map((a) => `${a.point_code} (${a.study_name})`).join(', ') : '-'}</td>
               <td><input type="checkbox" aria-label="active" checked={u.active} disabled={u.id === currentUser.id} onChange={(e) => act(() => api('PATCH', `/users/${u.id}`, { active: e.target.checked }), pick(lang, 'Updated', 'به‌روز شد'))} /></td>
-              <td className="text-end"><button onClick={() => { const pw = window.prompt(pick(lang, `New password for ${u.username} (min 8 characters):`, `گذرواژهٔ جدید برای ${u.username} (حداقل ۸ نویسه):`)); if (pw) void act(() => api('PATCH', `/users/${u.id}`, { password: pw }), pick(lang, 'Password changed; the user was signed out', 'گذرواژه تغییر کرد؛ کاربر از سامانه خارج شد')); }} className="inline-flex items-center gap-1 text-slate-300 hover:text-teal-300"><KeyRound className="w-3.5 h-3.5" />{pick(lang, 'Reset password', 'بازنشانی گذرواژه')}</button></td>
+              <td className="text-end"><button onClick={() => { const pw = window.prompt(pick(lang, `New password for ${u.username} (min ${MIN_PW[u.role]} characters):`, `گذرواژهٔ جدید برای ${u.username} (حداقل ${MIN_PW[u.role]} نویسه):`)); if (pw) void act(() => api('PATCH', `/users/${u.id}`, { password: pw }), pick(lang, 'Password changed; the user was signed out', 'گذرواژه تغییر کرد؛ کاربر از سامانه خارج شد')); }} className="inline-flex items-center gap-1 text-slate-300 hover:text-teal-300"><KeyRound className="w-3.5 h-3.5" />{pick(lang, 'Reset password', 'بازنشانی گذرواژه')}</button></td>
             </tr>))}</tbody></table></div>
       </section>
 

@@ -47,7 +47,7 @@ test('capture guide screenshots', async ({ browser }) => {
   await phone.goto('/');
   await mark(phone, 'login-username', 'login-password', 'login-submit');
   await shot(phone, '01-login');
-  await login(admin, 'admin', 'Admin-pass-1');
+  await login(admin, 'ad', 'Admin-pass-1');
   await expect(admin.getByTestId('study-title')).toBeVisible({ timeout: 20_000 });
   await expect(admin.getByTestId('kpi-matched')).toContainText(/\d/);
   await shot(admin, '02-dashboard-admin');
@@ -162,7 +162,7 @@ test('capture guide screenshots', async ({ browser }) => {
   const supCtx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   await persian(supCtx);
   const sup = await supCtx.newPage();
-  await login(sup, 'supervisor', 'Demo-pass-1');
+  await login(sup, 'sv', 'Demo-pass-1');
   await useDemo(sup);
   await expect(sup.getByTestId('kpi-matched')).toContainText(/\d/, { timeout: 20_000 });
   await shot(sup, '16-dashboard', true);
@@ -183,7 +183,7 @@ test('capture guide screenshots', async ({ browser }) => {
   const o2Ctx = await browser.newContext({ ...devices['Pixel 7'], permissions: ['microphone'] });
   await persian(o2Ctx);
   const o2 = await o2Ctx.newPage();
-  await login(o2, 'observer02', 'Demo-pass-1');
+  await login(o2, 'x1', 'Demo-pass-1');
   await o2.getByTestId('voice-button').click(); await o2.waitForTimeout(1800); await o2.getByTestId('voice-button').click();
   await expect(o2.getByTestId('clip-row')).toBeVisible({ timeout: 10_000 });
   await o2.getByTestId('plate-input').fill('888');
