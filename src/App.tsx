@@ -61,11 +61,14 @@ export default function App() {
   const loadStudyData = useCallback(async (id: string, u: User) => {
     try {
       setLoadError(null);
-      const s = await api<Study>('GET', `/studies/${id}`);
+      const [s, obs, rep] = await Promise.all([
+        api<Study>('GET', `/studies/${id}`),
+        api<VehicleObservation[]>('GET', `/studies/${id}/observations`),
+        u.role !== 'OBSERVER' ? api<Report>('POST', `/studies/${id}/match`, {}) : Promise.resolve(null),
+      ]);
       setStudy(s);
-      setObservations(await api<VehicleObservation[]>('GET', `/studies/${id}/observations`));
-      if (u.role !== 'OBSERVER') setReport(await api<Report>('POST', `/studies/${id}/match`, {}));
-      else setReport(null);
+      setObservations(obs);
+      setReport(rep);
     } catch (err) {
       if (!(err instanceof ApiError && err.status === 401)) setLoadError(errorText(err));
     }
