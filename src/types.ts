@@ -30,6 +30,7 @@ export interface AccountRow extends User {
 export interface ObservationPoint {
   id?: string;
   code: string;
+  map_id?: string | null;
   point_type: PointType;
   description: string;
   x_percent: number;
@@ -63,13 +64,15 @@ export interface StudySummary {
   supervisor_name: string;
   status: 'DRAFT' | 'ACTIVE' | 'COMPLETED';
   is_demo: boolean;
-  schematic_type: 'SCHEMATIC_GRID' | 'CUSTOM_IMAGE';
   observation_count: number;
   created_at: string;
 }
 
+export interface MapSection { id: string; name: string; sort_order: number; image_url: string | null }
+
 export interface Study extends StudySummary {
-  schematic_image_url?: string;
+  maps: MapSection[];
+  audio_enabled: boolean;
   retention_days: number | null;
   points: ObservationPoint[];
   routes: RouteDistance[];
@@ -97,6 +100,8 @@ export interface VehicleObservation {
   observer_name?: string;
   idempotency_key: string;
   created_at?: string;
+  has_audio?: boolean;
+  audio_ms?: number | null;
   /** local only: queued on this device and not yet accepted by the server */
   pending?: boolean;
 }

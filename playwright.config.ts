@@ -13,7 +13,7 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   reporter: [['list']],
-  use: { baseURL: LIVE ?? `http://localhost:${PORT}`, trace: 'retain-on-failure', screenshot: 'only-on-failure' },
+  use: { permissions: ['microphone'], launchOptions: { args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] }, baseURL: LIVE ?? `http://localhost:${PORT}`, trace: 'retain-on-failure', screenshot: 'only-on-failure' },
   projects: [{ name: 'mobile', use: { ...devices['Pixel 7'] } }, { name: 'desktop', use: { viewport: { width: 1366, height: 800 } } }],
   webServer: LIVE ? undefined : {
     command: 'node dist/server.mjs',

@@ -18,6 +18,9 @@ export interface QueuedObservation {
   vehicle_category: string;
   observation_timestamp: string; // ISO 8601 UTC
   idempotency_key: string;
+  audio_b64?: string; // optional voice clip of this passage, uploaded with it
+  audio_mime?: string;
+  audio_ms?: number;
   sync_status: 'PENDING' | 'SYNCED' | 'ERROR';
   error?: string;
   queued_at: number;

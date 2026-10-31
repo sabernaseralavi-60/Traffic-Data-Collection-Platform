@@ -5,6 +5,7 @@ import { LoginView } from './components/LoginView';
 import { DashboardView } from './components/DashboardView';
 import { FieldCollector } from './components/FieldCollector';
 import { StudySetup } from './components/StudySetup';
+import { ObservationsView } from './components/ObservationsView';
 import { MatchingView } from './components/MatchingView';
 import { ODMatrixView } from './components/ODMatrixView';
 import { AccountsView } from './components/AccountsView';
@@ -15,8 +16,8 @@ import { Language, getT, pick } from './i18n';
 import { applySyncResults, getPendingObservations, getQueuedForUser, getQueueStatus, QueuedObservation, SyncResult } from './utils/offlineQueue';
 
 const TABS: Record<User['role'], TabId[]> = {
-  ADMIN: ['dashboard', 'studies', 'matching', 'od_matrix', 'accounts', 'reports', 'kerman_manual'],
-  SUPERVISOR: ['dashboard', 'matching', 'od_matrix', 'reports', 'kerman_manual'],
+  ADMIN: ['dashboard', 'studies', 'observations', 'matching', 'od_matrix', 'accounts', 'reports', 'kerman_manual'],
+  SUPERVISOR: ['dashboard', 'observations', 'matching', 'od_matrix', 'reports', 'kerman_manual'],
   OBSERVER: ['collector', 'kerman_manual'],
 };
 
@@ -118,9 +119,12 @@ export default function App() {
     setIsSyncing(true);
     try {
       const pending = await getPendingObservations(user.id);
-      for (let i = 0; i < pending.length; i += 200) {
-        const chunk = pending.slice(i, i + 200);
-        const body = chunk.map((p) => ({ study_id: p.study_id, point_code: p.point_code, plate_suffix: p.plate_suffix, vehicle_category: p.vehicle_category, observed_at: p.observation_timestamp, idempotency_key: p.idempotency_key }));
+      // batches of at most 100 items and about 1.5 MB (voice clips make items large)
+      for (let i = 0; i < pending.length;) {
+        const chunk: typeof pending = [];
+        let bytes = 0;
+        while (i < pending.length && chunk.length < 100 && (chunk.length === 0 || bytes + (pending[i].audio_b64?.length ?? 0) < 1_500_000)) { bytes += pending[i].audio_b64?.length ?? 0; chunk.push(pending[i++]); }
+        const body = chunk.map((p) => ({ study_id: p.study_id, point_code: p.point_code, plate_suffix: p.plate_suffix, vehicle_category: p.vehicle_category, observed_at: p.observation_timestamp, idempotency_key: p.idempotency_key, ...(p.audio_b64 ? { audio_b64: p.audio_b64, audio_mime: p.audio_mime, audio_ms: p.audio_ms } : {}) }));
         const res = await api<{ results: SyncResult[] }>('POST', '/observations/batch-sync', { observations: body });
         await applySyncResults(user.id, res.results); // only accepted items become SYNCED; refused ones stay visible as ERROR
       }
@@ -200,6 +204,7 @@ export default function App() {
         {activeTab === 'dashboard' && <DashboardView study={study} lang={lang} user={user} report={report} observationCount={observations.length} setActiveTab={setTab} onDemoReset={async () => { if (study) { await api('POST', `/studies/${study.id}/seed-scenario`, {}); await refreshCurrent(); } }} />}
         {activeTab === 'collector' && <FieldCollector user={user} study={study} assignments={myAssignments} categories={categories} lang={lang} isOnline={isOnline} serverObservations={mine} queued={queued.filter((q) => q.study_id === studyId)} onChanged={async () => { await refreshQueue(); if (studyId) setObservations(await api<VehicleObservation[]>('GET', `/studies/${studyId}/observations`).catch(() => observations)); }} />}
         {activeTab === 'studies' && <StudySetup lang={lang} study={study} studies={studies} onChanged={async (id) => { const list = await reloadStudies(); const target = id ?? studyId ?? list[0]?.id; if (target) { setStudyId(target); localStorage.setItem('tl_study', target); await loadStudyData(target, user); } }} />}
+        {activeTab === 'observations' && <ObservationsView study={study} lang={lang} onChanged={refreshCurrent} />}
         {activeTab === 'matching' && <MatchingView study={study} lang={lang} categories={categories} initial={report} onReport={setReport} />}
         {activeTab === 'od_matrix' && <ODMatrixView study={study} lang={lang} report={report} />}
         {activeTab === 'accounts' && <AccountsView lang={lang} currentUser={user} categories={categories} onCategoriesChanged={async () => setCategories(await api<Category[]>('GET', '/categories'))} />}

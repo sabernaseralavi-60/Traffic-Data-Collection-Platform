@@ -5,6 +5,7 @@ import { Assignment, Category, Study, User, VehicleObservation } from '../types'
 import { Language, getT, pick } from '../i18n';
 import { normalizePlateDigits, parsePersianSpokenDigits } from '../utils/plateNormalization';
 import { discardQueued, QueuedObservation, retryErrors, saveOfflineObservation } from '../utils/offlineQueue';
+import { blobToBase64, canRecordAudio, Clip, ClipRecorder, startClip } from '../utils/audio';
 import { fmtTime } from '../utils/time';
 
 interface Props {
@@ -31,6 +32,11 @@ export const FieldCollector: React.FC<Props> = ({ user, study, assignments, cate
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ kind: 'ok' | 'warn' | 'error'; text: string } | null>(null);
   const [listening, setListening] = useState(false);
+  const [clip, setClip] = useState<Clip | null>(null);
+  const [clipUrl, setClipUrl] = useState<string | null>(null);
+  const recorderRef = useRef<ClipRecorder | null>(null);
+  const srFailedRef = useRef(false);
+  const audioOn = !!study?.audio_enabled && canRecordAudio();
   const [clock, setClock] = useState('');
   const recognitionRef = useRef<any>(null);
   const lockRef = useRef(false);
@@ -49,6 +55,12 @@ export const FieldCollector: React.FC<Props> = ({ user, study, assignments, cate
   }, [tz]);
 
   useEffect(() => { inputRef.current?.focus(); }, [pointCode]);
+  useEffect(() => {
+    if (!clip) { setClipUrl(null); return; }
+    const u = URL.createObjectURL(clip.blob);
+    setClipUrl(u);
+    return () => URL.revokeObjectURL(u);
+  }, [clip]);
 
   const speechSupported = typeof window !== 'undefined' && !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
   useEffect(() => {
@@ -59,8 +71,9 @@ export const FieldCollector: React.FC<Props> = ({ user, study, assignments, cate
     rec.continuous = false;
     rec.interimResults = false;
     rec.onstart = () => setListening(true);
-    rec.onend = () => setListening(false);
-    rec.onerror = (ev: any) => { setListening(false); setNotice({ kind: 'warn', text: pick(lang, `Speech error: ${ev.error}. Use the keypad.`, `خطای تشخیص گفتار: ${ev.error}. از صفحه‌کلید استفاده کنید.`) }); };
+    // the recogniser ends by itself after the speech; the clip is closed with it. If recognition failed, recording continues until the observer stops it
+    rec.onend = () => { if (!srFailedRef.current) void finishClip(); else setListening(!!recorderRef.current); };
+    rec.onerror = (ev: any) => { srFailedRef.current = true; setListening(!!recorderRef.current); setNotice({ kind: 'warn', text: pick(lang, `Speech error: ${ev.error}. Use the keypad.`, `خطای تشخیص گفتار: ${ev.error}. از صفحه‌کلید استفاده کنید.`) }); };
     rec.onresult = (ev: any) => {
       const heard = ev.results[0][0].transcript as string;
       const digits = parsePersianSpokenDigits(heard);
@@ -71,11 +84,31 @@ export const FieldCollector: React.FC<Props> = ({ user, study, assignments, cate
     return () => { try { rec.abort(); } catch { /* ignore */ } };
   }, [speechSupported, lang]);
 
-  const toggleVoice = () => {
+  const finishClip = async () => {
+    const r = recorderRef.current;
+    recorderRef.current = null;
+    setListening(false);
+    if (r) setClip(await r.stop());
+  };
+
+  const toggleVoice = async () => {
     const rec = recognitionRef.current;
-    if (!rec) return;
-    if (listening) rec.stop();
-    else { try { rec.start(); } catch { /* already started */ } }
+    if (listening) {
+      try { rec?.stop(); } catch { /* not running */ }
+      await finishClip();
+      return;
+    }
+    srFailedRef.current = false;
+    setClip(null);
+    if (audioOn) {
+      try {
+        recorderRef.current = await startClip((c) => { recorderRef.current = null; setListening(false); setClip(c); try { rec?.stop(); } catch { /* done */ } });
+        setListening(true);
+      } catch {
+        setNotice({ kind: 'warn', text: pick(lang, 'The microphone is not available for recording; you can still type the digits.', 'میکروفن برای ضبط در دسترس نیست؛ همچنان می‌توانید رقم‌ها را تایپ کنید.') });
+      }
+    }
+    if (rec) { try { rec.start(); } catch { /* already started */ } }
   };
 
   const press = (d: string) => setPlate((p) => (p.length < 3 ? p + d : p));
@@ -92,14 +125,16 @@ export const FieldCollector: React.FC<Props> = ({ user, study, assignments, cate
     setBusy(true);
     const now = Date.now();
     const dup = [...serverObservations, ...queued].some((o) => o.point_code === point.point_code && o.plate_suffix === suffix && now - new Date(o.observation_timestamp).getTime() < 12_000);
+    const clipB64 = clip ? await blobToBase64(clip.blob).catch(() => '') : '';
     const item: QueuedObservation = {
       id: crypto.randomUUID(), owner_user_id: user.id, study_id: study.id, point_code: point.point_code, point_type: point.point_type,
       plate_suffix: suffix, vehicle_category: category, observation_timestamp: new Date(now).toISOString(), idempotency_key: crypto.randomUUID(),
+      ...(clipB64 ? { audio_b64: clipB64, audio_mime: clip!.mime, audio_ms: clip!.ms } : {}),
       sync_status: 'PENDING', queued_at: now,
     };
     try {
       if (!isOnline) throw new ApiError(0, 'offline', 'network');
-      await api('POST', '/observations', { study_id: item.study_id, point_code: item.point_code, plate_suffix: suffix, vehicle_category: category, observed_at: item.observation_timestamp, idempotency_key: item.idempotency_key });
+      await api('POST', '/observations', { study_id: item.study_id, point_code: item.point_code, plate_suffix: suffix, vehicle_category: category, observed_at: item.observation_timestamp, idempotency_key: item.idempotency_key, ...(clipB64 ? { audio_b64: clipB64, audio_mime: clip!.mime, audio_ms: clip!.ms } : {}) });
       setNotice({ kind: dup ? 'warn' : 'ok', text: (dup ? t.duplicate_warning + ' ' : '') + pick(lang, `Recorded #${suffix} at ${point.point_code}`, `ثبت شد #${suffix} در ${point.point_code}`) });
     } catch (err) {
       const transient = err instanceof ApiError && (err.status === 0 || err.status >= 500 || err.status === 401 || err.status === 429);
@@ -114,6 +149,7 @@ export const FieldCollector: React.FC<Props> = ({ user, study, assignments, cate
       }
     }
     setPlate('');
+    setClip(null);
     onChanged();
     lockRef.current = false;
     setBusy(false);
@@ -191,16 +227,24 @@ export const FieldCollector: React.FC<Props> = ({ user, study, assignments, cate
             className="w-full h-20 text-center font-mono text-5xl font-black tracking-widest bg-slate-950 border-2 border-slate-700 focus:border-teal-400 rounded-2xl text-white placeholder-slate-600 focus:outline-none focus:ring-4 focus:ring-teal-500/20"
           />
           <div className="flex gap-2">
-            <button type="button" onClick={toggleVoice} disabled={!speechSupported || !canRecord} title={speechSupported ? '' : t.voice_unsupported}
+            <button type="button" onClick={() => void toggleVoice()} disabled={(!speechSupported && !audioOn) || !canRecord} title={speechSupported || audioOn ? '' : t.voice_unsupported} data-testid="voice-button"
               className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-xs font-bold border disabled:opacity-40 ${listening ? 'bg-rose-600 text-white border-rose-500 animate-pulse' : 'bg-slate-800 text-teal-300 border-teal-500/30'}`}>
-              {listening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}<span>{listening ? t.listening : t.voice_input}</span>
+              {listening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}<span>{listening ? (audioOn ? pick(lang, 'Recording… say the digits, tap to stop', 'در حال ضبط… رقم‌ها را بگویید، برای پایان لمس کنید') : t.listening) : audioOn ? pick(lang, 'Say digits (records this passage)', 'گفتن رقم‌ها (ضبط صدای این تردد)') : t.voice_input}</span>
             </button>
             <button type="submit" disabled={busy || plate.length !== 3 || !canRecord} data-testid="record-button"
               className={`flex-[2] flex items-center justify-center gap-2 py-3 px-5 rounded-xl font-bold text-sm ${plate.length === 3 && canRecord ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 active:scale-95' : 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed'}`}>
               <Send className="w-4 h-4" /><span>{t.submit_button}</span>
             </button>
           </div>
-          {!speechSupported && <p className="text-[11px] text-slate-500">{t.voice_unsupported}</p>}
+          {!speechSupported && !audioOn && <p className="text-[11px] text-slate-500">{t.voice_unsupported}</p>}
+          {!speechSupported && audioOn && <p className="text-[11px] text-slate-500">{pick(lang, 'This browser cannot turn speech into digits: the clip is still recorded - type the digits yourself.', 'این مرورگر گفتار را به رقم تبدیل نمی‌کند: صدا همچنان ضبط می‌شود - رقم‌ها را خودتان تایپ کنید.')}</p>}
+          {clip && clipUrl && (
+            <div className="flex items-center gap-2 p-2 rounded-xl bg-slate-950 border border-slate-800 text-[11px] text-slate-300" data-testid="clip-row">
+              <audio src={clipUrl} controls className="h-8 flex-1 min-w-0" />
+              <span className="font-mono">{(clip.ms / 1000).toFixed(1)}s</span>
+              <button type="button" onClick={() => setClip(null)} className="text-slate-400 hover:text-rose-300" aria-label={pick(lang, 'Discard clip', 'حذف صدا')}>✕</button>
+            </div>
+          )}
           {notice && (
             <div role="status" data-testid="notice" className={`p-2.5 rounded-xl text-xs flex items-start gap-2 border ${notice.kind === 'ok' ? 'bg-emerald-950/50 border-emerald-700/50 text-emerald-300' : notice.kind === 'warn' ? 'bg-amber-950/60 border-amber-700/60 text-amber-300' : 'bg-rose-950/60 border-rose-700/60 text-rose-200'}`}>
               {notice.kind === 'ok' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertTriangle className="w-4 h-4 shrink-0" />}<span>{notice.text}</span>

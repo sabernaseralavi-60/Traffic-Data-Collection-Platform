@@ -1,9 +1,9 @@
 import React from 'react';
-import { AlertTriangle, BarChart3, BookOpen, Car, FileSpreadsheet, GitCompare, Globe, Layers, LogOut, MapPin, RefreshCw, Users, WifiOff } from 'lucide-react';
+import { AlertTriangle, BarChart3, ListChecks, BookOpen, Car, FileSpreadsheet, GitCompare, Globe, Layers, LogOut, MapPin, RefreshCw, Users, WifiOff } from 'lucide-react';
 import { StudySummary, User } from '../types';
 import { Language, getT, pick } from '../i18n';
 
-export type TabId = 'dashboard' | 'collector' | 'studies' | 'matching' | 'od_matrix' | 'accounts' | 'reports' | 'kerman_manual';
+export type TabId = 'dashboard' | 'collector' | 'studies' | 'observations' | 'matching' | 'od_matrix' | 'accounts' | 'reports' | 'kerman_manual';
 
 interface NavbarProps {
   tabs: TabId[];
@@ -29,6 +29,7 @@ export const Navbar: React.FC<NavbarProps> = ({ tabs, activeTab, setActiveTab, l
     dashboard: { label: t.nav_dashboard, icon: BarChart3 },
     collector: { label: t.nav_field_collector, icon: Car, highlight: true },
     studies: { label: pick(lang, 'Studies & Map', 'طرح‌ها و نقشه'), icon: MapPin },
+    observations: { label: pick(lang, 'Recorded passages', 'تردهای ثبت‌شده'), icon: ListChecks },
     matching: { label: t.nav_matching, icon: GitCompare },
     od_matrix: { label: t.nav_od_matrix, icon: Layers },
     accounts: { label: pick(lang, 'Accounts & Categories', 'حساب‌ها و دسته‌بندی‌ها'), icon: Users },

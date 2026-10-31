@@ -136,26 +136,102 @@ test.describe('supervisor and administrator', () => {
     expect(csv.suggestedFilename()).toMatch(/\.csv$/);
   });
 
-  test('admin sets up a study: create, points, distance, assignment, activate', async ({ page }) => {
+  test('admin sets up a study: two map sections, entries/exits, a person at each, team sheet, activate', async ({ page }) => {
     const project = test.info().project.name;
+    const tag = `${project}${Date.now().toString(36)}`;
     await login(page, 'admin', ADMIN_PW);
     await page.getByTestId('tab-studies').click();
     await page.getByTestId('new-study-name').fill(`E2E study ${project}`);
     await page.getByTestId('create-study').click();
     await expect(page.getByTestId('setup-msg')).toContainText(/study created/i);
-    await page.getByTestId('add-entry').click();
-    await page.getByTestId('add-exit').click();
+
+    // road-map sections: the study starts with "Map 1"; add a second one and put the exit on it
+    await page.getByTestId('new-map-name').fill('North junction');
+    await page.getByTestId('add-map').click();
+    await expect(page.getByTestId('setup-msg')).toContainText(/section added/i);
+    await page.getByTestId('add-entry').click();                       // E01 lands on the active section (Map 1)
+    await page.getByTestId('map-tab-North junction').click();
+    await page.getByTestId('add-exit').click();                        // X01 lands on North junction
+    await expect(page.getByTestId('marker-X01')).toBeVisible();
+    await expect(page.getByTestId('marker-E01')).toHaveCount(0);       // E01 is drawn on the other section
+    await page.getByTestId('map-tab-Map 1').click();
+    await expect(page.getByTestId('marker-E01')).toBeVisible();
     await page.getByTestId('dist-E01-X01').fill('1800');
-    await page.getByTestId('save-points').click();
+
+    // one person per point, created on the spot
+    for (const [point, name] of [['E01', 'Counter Entry'], ['X01', 'Counter Exit']] as const) {
+      await page.getByTestId('qp-name').fill(`${name} ${tag}`);
+      await page.getByTestId('qp-username').fill(`${name.split(' ')[1].toLowerCase()}.${tag}`.slice(0, 32));
+      await page.getByTestId('qp-password').fill('Observer-pass-1');
+      await page.getByTestId('qp-point').selectOption(point);
+      await page.getByTestId('qp-create').click();
+      await expect(page.getByTestId('setup-msg')).toContainText(/account created/i);
+    }
+    await expect(page.getByTestId('person-E01')).toContainText('Counter Entry');
+    await expect(page.getByTestId('person-X01')).toContainText('Counter Exit');
+    await page.getByTestId('save-all').click();
     await expect(page.getByTestId('setup-msg')).toContainText(/saved/i);
-    await page.getByTestId('add-assignment').click();
-    await page.getByTestId('asg-user-0').selectOption({ label: 'Zahra Karimi (@observer04)' });
-    await page.getByTestId('asg-point-0').selectOption('X01');
-    await page.getByTestId('save-assignments').click();
-    await expect(page.getByTestId('setup-msg')).toContainText(/assignments saved/i);
+    await expect(page.getByTestId('person-X01')).toContainText('Counter Exit'); // still there after the reload from the server
     await page.getByTestId('study-status').selectOption('ACTIVE');
-    await expect(page.getByTestId('setup-msg')).toContainText(/saved/i);
+    await expect(page.getByTestId('study-status')).toHaveValue('ACTIVE');
     await shot(page, 'setup', project);
+
+    await page.emulateMedia({ media: 'print' });
+    await expect(page.getByTestId('team-sheet')).toBeVisible();
+    await expect(page.getByTestId('team-sheet')).toContainText(`Counter Exit ${tag}`);
+    await expect(page.getByTestId('team-sheet')).toContainText('North junction');
+    await page.emulateMedia({ media: 'screen' });
+
+    // the new person can sign in and sees exactly their own point
+    await page.getByTestId('logout').click();
+    await login(page, `exit.${tag}`.slice(0, 32), 'Observer-pass-1');
+    await expect(page.getByTestId('station-code')).toHaveText('X01');
+  });
+
+  test('voice clip per passage: observer records, supervisor listens and corrects', async ({ page }) => {
+    test.skip(!!process.env.E2E_BASE_URL && false, 'runs live too');
+    const project = test.info().project.name;
+    await login(page, 'observer02', DEMO_PW);
+    await expect(page.getByTestId('station-code')).toHaveText('X01');
+    await page.getByTestId('voice-button').click();
+    await page.waitForTimeout(1800);                          // the fake microphone produces a tone
+    await page.getByTestId('voice-button').click();           // stop
+    await expect(page.getByTestId('clip-row')).toBeVisible({ timeout: 10_000 });
+    await page.getByTestId('plate-input').fill('888');
+    await page.getByTestId('record-button').click();
+    await expect(page.getByTestId('notice')).toContainText('888');
+    await expect(page.getByTestId('clip-row')).toHaveCount(0);       // the clip travelled with the passage
+    await page.getByTestId('logout').click();
+
+    await login(page, 'supervisor', DEMO_PW);
+    await useDemoStudy(page);
+    await page.getByTestId('tab-observations').click();
+    const row = page.getByTestId('obs-row-888');
+    await expect(row).toBeVisible();
+    await row.getByTestId('play-888').click();
+    await expect(page.getByTestId('audio-player')).toBeVisible();
+    const audio = await page.evaluate(async () => {
+      const id = document.querySelector('audio')!.getAttribute('src')!;
+      const r = await fetch(id);
+      return { status: r.status, type: r.headers.get('content-type'), bytes: (await r.arrayBuffer()).byteLength };
+    });
+    expect(audio.status).toBe(200);
+    expect(audio.type).toMatch(/^audio\//);
+    expect(audio.bytes).toBeGreaterThan(500);
+    await shot(page, 'passages', project);
+
+    await row.getByTestId('correct-open').click();
+    await page.getByTestId('correct-input').fill('886');
+    await page.getByTestId('correct-save').click();
+    await expect(page.getByTestId('obs-msg')).toContainText(/corrected/i);
+    const fixed = page.getByTestId('obs-row-886');
+    await expect(fixed).toBeVisible();
+    await expect(page.getByTestId('obs-row-888')).toHaveCount(0);
+    await expect(fixed.getByTestId('play-886')).toBeVisible();        // the clip stayed with the corrected entry
+
+    page.once('dialog', (d) => d.accept());                           // leave the shared demo study as we found it
+    await fixed.getByLabel(/undo entry|لغو ثبت/i).click();
+    await expect(page.getByTestId('obs-row-886')).toHaveCount(0);
   });
 
   test('persian / RTL layout', async ({ page }) => {
