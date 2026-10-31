@@ -1,0 +1,6 @@
+{
+  "name": "TrafficLab – Smart Traffic Data Collection Platform",
+  "description": "Modular field data collection and traffic engineering platform for vehicle entry-exit tracking, OD matrix analysis, and travel time estimation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
