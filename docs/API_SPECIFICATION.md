@@ -5,11 +5,11 @@ Errors: `{ "error": "...", "code": "..." }` (validation errors add `issues: [{pa
 
 | Method and path | Role | Purpose |
 |---|---|---|
-| `POST /auth/login` | public (30/15 min/IP, lockout after 5 failures) | `{username,password}` -> sets cookie |
+| `POST /auth/login` | public (30/15 min/IP; 5 failures lock the account 15 min, each further lock twice as long, max 24 h) | `{username,password}` -> sets cookie |
 | `POST /auth/logout` | any | clears cookie |
 | `GET /auth/me` | any | user + own assignments |
 | `POST /auth/change-password` | any | `{current_password,new_password}` |
-| `GET/POST /users`, `PATCH /users/:id` | A (GET also S: observers only) | accounts, activate, reset password, role |
+| `GET/POST /users`, `PATCH /users/:id` | A (GET also S: observers only) | accounts, activate, reset password, role, rename (`username`, 2-32 chars); minimum password length OBSERVER 2 / SUPERVISOR 4 / ADMIN 6 |
 | `GET /categories`, `POST /categories`, `PATCH /categories/:code` | any / A / A | configurable vehicle categories |
 | `GET /studies`, `POST /studies` | any (observer: assigned only) / A | list, create |
 | `GET/PATCH/DELETE /studies/:id` | visible / A / A | detail (points, routes, assignments), update (name, times, status, retention, audio on/off), delete (no data unless demo) |

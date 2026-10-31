@@ -19,7 +19,7 @@ npm run dev                 # http://localhost:3000
 ```
 
 On first start in development an embedded database is created in `data/` with a synthetic **DEMO** study and accounts
-`admin`, `supervisor`, `observer01..04` (password `demo-1234`, or `SEED_PASSWORD`). Demo data is clearly labelled
+`ad` (administrator), `sv` (supervisor), `e1`, `e2`, `x1`, `x2` (observers at E01, E02, X01, X02), all with password `demo-1234` (or `SEED_PASSWORD`). Demo data is clearly labelled
 and can be reset by the administrator.
 
 ## Scripts

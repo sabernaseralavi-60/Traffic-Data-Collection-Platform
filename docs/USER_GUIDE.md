@@ -3,7 +3,7 @@
 The complete illustrated guide in Persian (administrator, observer, supervisor; Word) is [TrafficLab_User_Guide_FA.docx](TrafficLab_User_Guide_FA.docx); rebuild it with `python docs/guide/build_guide.py` after `npx playwright test -c playwright.guide.config.ts`. This page is the short English summary.
 
 ## Field observer
-1. Sign in with the account your administrator created. You see **your assigned point** (e.g. `E01 - ENTRY`) at the top; if you have none, recording is disabled so nothing is saved at the wrong place.
+1. Sign in with the account your administrator created (usernames can be as short as 2 characters, e.g. `e1`; Persian digits are accepted; 5 wrong passwords lock the account for 15 minutes, each further lock twice as long, up to 24 h). You see **your assigned point** (e.g. `E01 - ENTRY`) at the top; if you have none, recording is disabled so nothing is saved at the wrong place.
 2. When a vehicle passes: tap its **last 3 digits** on the keypad (or type; Persian digits work; or use the voice button, which only fills the field - check it, then record). Exactly three digits are required; keep leading zeros (`042`).
 3. Optionally press the voice button: it records a short clip of this passage (max 6 s) and, where the browser supports it, fills in the digits; always check the digits before recording.
 3. Optionally tap the vehicle category (never required; it is remembered as your default).
@@ -20,7 +20,7 @@ The complete illustrated guide in Persian (administrator, observer, supervisor; 
 * **Reports** - Excel, CSV, and a printable report (browser *Print / Save as PDF*).
 
 ## Administrator
-* **Accounts and categories** - create observers/supervisors, deactivate, reset a password, edit the vehicle category list.
+* **Accounts and categories** - create observers/supervisors, deactivate, reset a password, edit the vehicle category list. Minimum password length by role: observer 2, supervisor 4, administrator 6 (an observer can only add sightings at their own point).
 * **Studies and map** - create a study (DRAFT); add one or more **map sections** (PNG/JPG/SVG, large images are scaled down automatically); add ENTRY/EXIT points on each section and drag them into place; choose **the person counting at each point** (or create the account on the spot; extra people = shifts, optional period); enter route distances; **Save everything**; print the **team sheet**; then set the study **ACTIVE**. Set it **COMPLETED** to stop recording. Points that already have observations cannot be removed.
 * Optional **retention**: observations are deleted automatically that many days after the study date.
 * The DEMO study (if present) holds synthetic data and can be reset from the dashboard.
